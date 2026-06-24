@@ -17,7 +17,7 @@ using Vec2d = OpenTK.Mathematics.Vector2d;
 using Vec3d = OpenTK.Mathematics.Vector3d;
 using Vec3f = OpenTK.Mathematics.Vector3;
 using OpenTK.Mathematics;
-using static Crystallography.L10n; // 260621Cl 追加: コード側多言語化 Loc() (§2.5, OpenGL は Controls.CodeLocalizer 非参照のため個別実装)
+using static Crystallography.Localization; // 260621Cl 追加: コード側多言語化 Loc() (§2.5, OpenGL は Controls.CodeLocalizer 非参照のため個別実装)
 #endregion
 
 namespace Crystallography.OpenGL;
@@ -676,7 +676,7 @@ public unsafe partial class GLControlAlpha : UserControl
     }
 
     // 260621Cl 追加 (§2.5): コンテキストメニュー項目を実行時にコード側多言語化する。GLControlAlpha は OpenGL
-    // プロジェクト所属で Crystallography.Controls.CodeLocalizer を参照できないため、L10n.Loc を直接使う個別実装。
+    // プロジェクト所属で Crystallography.Controls.CodeLocalizer を参照できないため、Localization.Loc を直接使う個別実装。
     protected override void OnLoad(EventArgs e)
     {
         base.OnLoad(e);
