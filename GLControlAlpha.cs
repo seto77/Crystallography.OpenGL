@@ -147,6 +147,11 @@ public unsafe partial class GLControlAlpha : UserControl
     [Description("WorldMatrixが変化したときに発生するイベント. マウスで回転させた場合や、WorldMatrixに直接 set したときに発生。")]
     public event EventHandler WorldMatrixChanged;
 
+    /// <summary>ProjWidthが変化したときに発生するイベント.</summary>
+    [Browsable(true)]
+    [Description("ProjWidthが変化したときに発生するイベント. マウス操作(右ドラッグ/ホイール)でズームした場合や、ProjWidthに直接 set したときに発生。")]
+    public event EventHandler ProjWidthChanged; // 260703Cl 追加: WorldMatrixChanged と同型
+
     #endregion イベント
 
     #region プロパティ
@@ -399,7 +404,8 @@ public unsafe partial class GLControlAlpha : UserControl
     /// <summary>投影面の横の長さ(GL空間での単位)</summary>
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)] //260405Cl 追加
     [Category("Geometry")]
-    public double ProjWidth { get => projWidth; set { projWidth = value; setProjMatrix(); } }
+    //public double ProjWidth { get => projWidth; set { projWidth = value; setProjMatrix(); } } // 260703Cl 変更前
+    public double ProjWidth { get => projWidth; set { projWidth = value; setProjMatrix(); ProjWidthChanged?.Invoke(this, EventArgs.Empty); } } // 260703Cl ズーム操作(右ドラッグ/ホイール)・直接set のどちらでもイベント発生
 
     private double projWidth = 4f;
 
