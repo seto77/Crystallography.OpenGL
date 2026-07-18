@@ -1,6 +1,5 @@
 ﻿#region using
 using System;
-using System.Buffers;
 using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -32,6 +31,7 @@ namespace Crystallography.OpenGL;
 
 #region Vertex 頂点構造体
 /// <summary>頂点要素（シェーダの頂点要素と合わせる）</summary>
+[StructLayout(LayoutKind.Sequential)] // 260717Cl 追加: Generate() の VertexAttribPointer が前提とするフィールド順・オフセットを保証する
 public readonly struct Vertex
 {
     /// <summary>0: テクスチャ無しポリゴン. 1: テクスチャ有りポリゴン. 2: 文字列.</summary>
@@ -54,18 +54,17 @@ public readonly struct Vertex
         Position = position;
         Normal = normal;
         Argb = argb;
-        Uv = V2f.Zero; // (260320Ch) Zero 定数で初期値の意図を明確にする
+        Uv = V2f.Zero;
         ObjType = 0;
     }
 
     /// <summary>テクスチャ無しのポリゴン</summary>
     /// <param name="position"></param>
-    /// <param name="normal"></param>
     /// <param name="argb"></param>
     public Vertex(V3f position, int argb)
     {
         Position = position;
-        Normal = V3f.Zero; // (260320Ch) default normal を共有 Zero で表す
+        Normal = V3f.Zero;
         Argb = argb;
         Uv = V2f.Zero;
         ObjType = 0;
@@ -84,7 +83,7 @@ public readonly struct Vertex
     public Vertex(V3f position, V3f normal, V2f uv)
     {
         if (GLControlAlpha.DisableTextRendering)
-            position = V3f.Zero; // (260320Ch) 文字描画無効時も共有 Zero を使う
+            position = V3f.Zero;
         Position = position;
         Normal = normal;
         Argb = 0;
@@ -92,7 +91,7 @@ public readonly struct Vertex
         ObjType = 2;
     }
 
-    public static readonly int Stride = Marshal.SizeOf<Vertex>(); // (260320Ch) generic overload でダミー値生成を避ける
+    public static readonly int Stride = Marshal.SizeOf<Vertex>();
 }
 #endregion
 
@@ -140,13 +139,12 @@ public abstract class GLObject
 {
     #region static private な フィールド & プロパティ
 
-    // private static readonly Dictionary<int, Location> Location = [];
     private static readonly Dictionary<(int ContextKey, int Program), Location> Location = []; // (260319Ch) 複数 GL context 間で program 番号が衝突しても location を取り違えない
     internal static int CurrentFragmentRenderPassIndex = -1; // (260319Ch) PPLL / DDP の RenderPass も UseProgram 後に毎 draw 明示する
     internal static bool CurrentDepthTestEnabled = true; // (260319Ch) clip 描画後にレンダリング phase ごとの depth test state を復元する
 
-    private static readonly int sizeOfInt = sizeof(int);
-    private static readonly int sizeOfUInt = sizeof(uint);
+    private const int sizeOfInt = sizeof(int); // 260717Cl 変更: static readonly → const
+    private const int sizeOfUInt = sizeof(uint);
     private static readonly List<(string Product, string Version)> GraphicsInfo;
     private static int serialNumber = 0;
     public static readonly Lock LockObj = new();
@@ -236,8 +234,7 @@ public abstract class GLObject
             Debug.WriteLine($"GLObject: WMI Win32_VideoController query failed: {e.Message}");
         }
 
-        // var flag = GraphicsInfo.Select(g => g.Product.ToLower()).Any(p => p.Contains("nvidia") || p.Contains("amd"));
-        var flag = GraphicsInfo.Any(static g => g.Product.Contains("nvidia", StringComparison.OrdinalIgnoreCase) || g.Product.Contains("amd", StringComparison.OrdinalIgnoreCase)); // (260320Ch) ToLower の一時文字列を作らず大小無視で判定する
+        var flag = GraphicsInfo.Any(static g => g.Product.Contains("nvidia", StringComparison.OrdinalIgnoreCase) || g.Product.Contains("amd", StringComparison.OrdinalIgnoreCase));
         Cone.Default = (1, flag ? 24 : 16);
         Pipe.Default = (1, flag ? 24 : 16);
         Sphere.DefaultSlices = flag ? 4 : 3;
@@ -257,14 +254,10 @@ public abstract class GLObject
 
     public void Dispose()
     {
-        // Sphere.DefaultDictionary.Remove(Program);
-        // Cylinder.DefaultDictionary.Remove(Program);
         Sphere.DefaultDictionary.Remove((ContextKey, Program)); // (260319Ch) 別 context の default VAO を巻き込まない
-        Cylinder.DefaultDictionary.Remove((ContextKey, Program)); // (260319Ch)
-        // if (this is TextObject t && TextObject.DefaultDictionaly.ContainsKey((Program, t.TextureNum)))
-        //     TextObject.DefaultDictionaly.Remove((Program, t.TextureNum));
-        if (this is TextObject t && TextObject.DefaultDictionaly.ContainsKey((t.ContextCacheKey, Program, t.TextureNum)))
-            TextObject.DefaultDictionaly.Remove((t.ContextCacheKey, Program, t.TextureNum)); // (260319Ch) text VAO cache は context 単位で破棄する
+        Cylinder.DefaultDictionary.Remove((ContextKey, Program));
+        if (this is TextObject t)
+            TextObject.DefaultDictionaly.Remove((t.ContextCacheKey, Program, t.TextureNum)); // (260319Ch) text VAO cache は context 単位で破棄する 260717Cl 変更: ContainsKey の事前判定は不要 (Remove は存在しないキーで no-op)
         GL.DeleteBuffers(1, ref Obj.VBO);
         GL.DeleteBuffers(1, ref Obj.EBO);
         GL.DeleteVertexArrays(1, ref Obj.VAO);
@@ -276,54 +269,28 @@ public abstract class GLObject
     /// <summary>静的メソッド. program番号をセットし、各バッファオブジェクトなどGPUに転送する. 描画前に必ず一度実行する必要がある。</summary>
     /// <param name="program"></param>
     /// <param name="objects"></param>
-    // public static void Generate(int program, IEnumerable<GLObject> objects)
     public static void Generate(int program, IEnumerable<GLObject> objects, int contextKey = 0) // (260319Ch) location / default VAO cache を context ごとに分離
     {
         if (program < 0) return;
         ArgumentNullException.ThrowIfNull(objects);
 
         //Locationを取得
-        // if (!Location.TryGetValue(program, out var location))
         if (!Location.TryGetValue((contextKey, program), out var location))
         {
-            // Location.Add(program, GetLocation(program));
-            // location = Location[program];
-            Location.Add((contextKey, program), GetLocation(program)); // (260319Ch) 同じ program 番号でも別 context なら別 location を持つ
-            location = Location[(contextKey, program)];
+            location = GetLocation(program); // (260319Ch) 同じ program 番号でも別 context なら別 location を持つ
+            Location.Add((contextKey, program), location);
         }
-
-        //VertexAttribPointerのパラメータを取得
-        //var prms = new (int loc, int size, VertexAttribPointerType type, bool normarized, int stride, int offset)[]
-        //{
-        //        (location.ObjType, 1, VertexAttribPointerType.Byte, false, Vertex.Stride, 0),//ObjTYpe
-        //        (location.Argb, 1, VertexAttribPointerType.Int, false, Vertex.Stride, sizeOfInt),//色
-        //        (location.Position, 3, VertexAttribPointerType.Float, false, Vertex.Stride, sizeOfInt *2), //頂点位置
-        //        (location.Normal, 3, VertexAttribPointerType.Float, true, Vertex.Stride, sizeOfInt *2 + V3f.SizeInBytes),//法線
-        //        (location.Uv, 2, VertexAttribPointerType.Float, false, Vertex.Stride, sizeOfInt *2 + 2 * V3f.SizeInBytes)//テクスチャ座標
-        //};
-        var integerAttribs = new (int loc, int size, VertexAttribIntegerType type, int stride, int offset)[]
-        {
-                (location.ObjType, 1, VertexAttribIntegerType.Int, Vertex.Stride, 0),//ObjType // (260319Ch) core profile では整数属性を IPointer で渡す
-                (location.Argb, 1, VertexAttribIntegerType.Int, Vertex.Stride, sizeOfInt),//色 // (260319Ch) GLSL の int 入力へそのまま渡す
-        };
-        var floatAttribs = new (int loc, int size, VertexAttribPointerType type, bool normarized, int stride, int offset)[]
-        {
-                (location.Position, 3, VertexAttribPointerType.Float, false, Vertex.Stride, sizeOfInt *2), //頂点位置
-                (location.Normal, 3, VertexAttribPointerType.Float, true, Vertex.Stride, sizeOfInt *2 + V3f.SizeInBytes),//法線
-                (location.Uv, 2, VertexAttribPointerType.Float, false, Vertex.Stride, sizeOfInt *2 + 2 * V3f.SizeInBytes)//テクスチャ座標
-        };
 
         foreach (var o in objects)
         {
             if (o.Vertices is not { Length: > 0 })
-                continue; // (260320Ch) LINQ の Where を介さずその場でスキップする
+                continue;
 
             o.Program = program;
             o.ContextKey = contextKey; // (260319Ch) Render 時にも context 単位の location cache を引けるよう保持する
 
             if (o is TextObject t)
             {
-                // if (TextObject.DefaultDictionaly.TryGetValue((program, t.TextureNum), out var def))
                 if (TextObject.DefaultDictionaly.TryGetValue((t.ContextCacheKey, program, t.TextureNum), out var def))
                     o.Obj = def;//Defaultテキストであれば、VAO, VBO, EBOをセットしておしまい。
                 else
@@ -340,13 +307,11 @@ public abstract class GLObject
                 else if (o is Cylinder c && c.UseDefault)
                     dic = Cylinder.DefaultDictionary;
 
-                // if (dic != null && dic.TryGetValue(program, out var def))
                 if (dic != null && dic.TryGetValue((o.ContextKey, program), out var def))
                     o.Obj = def;//Default形状であれば、VAO, VBO, EBOをセットしておしまい。
                 else
                 {
                     GenerateSub(o);
-                    // dic?.Add(program, o.Obj);
                     dic?.Add((o.ContextKey, program), o.Obj); // (260319Ch) 別 context の VAO を誤再利用しない
                 }
             }
@@ -355,30 +320,39 @@ public abstract class GLObject
         //ローカル関数
         void GenerateSub(GLObject o)
         {
+            // 260717Cl 変更: VAO を先に bind し、EBO バインドを VAO 状態として記録する (Render 毎の EBO 再バインドを不要にする)。
+            // 属性パラメータのタプル配列も毎回確保せず直接呼び出しに展開。
+            GL.GenVertexArrays(1, out o.Obj.VAO);
+            GL.BindVertexArray(o.Obj.VAO);
             // VBO作成
             GL.GenBuffers(1, out o.Obj.VBO);
             GL.BindBuffer(BufferTarget.ArrayBuffer, o.Obj.VBO);
             GL.BufferData(BufferTarget.ArrayBuffer, new IntPtr(o.Vertices.Length * Vertex.Stride), o.Vertices, BufferUsageHint.DynamicDraw);
-            // EBO作成
+            // EBO作成 (VAO bind 中なので VAO に記録される)
             GL.GenBuffers(1, out o.Obj.EBO);
             GL.BindBuffer(BufferTarget.ElementArrayBuffer, o.Obj.EBO);
             GL.BufferData(BufferTarget.ElementArrayBuffer, new IntPtr(sizeOfUInt * o.Indices.Length), o.Indices, BufferUsageHint.DynamicDraw);
-            // VAO作成
-            GL.GenVertexArrays(1, out o.Obj.VAO);
-            GL.BindVertexArray(o.Obj.VAO);
-            GL.BindBuffer(BufferTarget.ArrayBuffer, o.Obj.VBO);
             //VertexAttribPointerをセット
-            foreach (var (loc, size, type, stride, offset) in integerAttribs)
+            // 260718Cl 変更: 5 属性それぞれの「location==-1 なら skip / Enable / *Pointer」定型を 2 つのローカル関数へ集約 (タプル配列は使わずゼロ確保のまま重複を除去)
+            EnableIntAttrib(location.ObjType, 0);
+            EnableIntAttrib(location.Argb, sizeOfInt);
+            EnableFloatAttrib(location.Position, 3, false, sizeOfInt * 2);
+            EnableFloatAttrib(location.Normal, 3, true, sizeOfInt * 2 + V3f.SizeInBytes);
+            EnableFloatAttrib(location.Uv, 2, false, sizeOfInt * 2 + 2 * V3f.SizeInBytes);
+            GL.BindVertexArray(0); // 260717Cl 追加: 後続の ElementArrayBuffer バインドがこの VAO 状態を汚さないよう解除
+            return;
+
+            void EnableIntAttrib(int loc, int offset) // core profile では整数属性を IPointer で渡す
             {
-                if (loc == -1) continue;
+                if (loc == -1) return;
                 GL.EnableVertexAttribArray(loc);
-                GL.VertexAttribIPointer(loc, size, type, stride, new IntPtr(offset));
+                GL.VertexAttribIPointer(loc, 1, VertexAttribIntegerType.Int, Vertex.Stride, new IntPtr(offset));
             }
-            foreach (var (loc, size, type, normarized, stride, offset) in floatAttribs)
+            void EnableFloatAttrib(int loc, int size, bool normalized, int offset)
             {
-                if (loc == -1) continue;
+                if (loc == -1) return;
                 GL.EnableVertexAttribArray(loc);
-                GL.VertexAttribPointer(loc, size, type, normarized, stride, offset);
+                GL.VertexAttribPointer(loc, size, VertexAttribPointerType.Float, normalized, Vertex.Stride, offset);
             }
         }
     }
@@ -416,17 +390,13 @@ public abstract class GLObject
 
         if (GraphicsInfo.All(info => !info.Product.Contains("Parallels")))
         {
-            // loc.PassPPLL1Index = GL.GetProgramResourceIndex(Program, ProgramInterface.FragmentSubroutine, "passPPLL1");
-            // loc.PassPPLL2Index = GL.GetProgramResourceIndex(Program, ProgramInterface.FragmentSubroutine, "passPPLL2");
-            // loc.PassNormalIndex = GL.GetProgramResourceIndex(Program, ProgramInterface.FragmentSubroutine, "passNormal");
             loc.PassPPLL1Index = GL.GetSubroutineIndex(Program, ShaderType.FragmentShader, "passPPLL1"); // (260319Ch) UniformSubroutines 用の正しい index を取得する
-            loc.PassPPLL2Index = GL.GetSubroutineIndex(Program, ShaderType.FragmentShader, "passPPLL2"); // (260319Ch)
-            loc.PassNormalIndex = GL.GetSubroutineIndex(Program, ShaderType.FragmentShader, "passNormal"); // (260319Ch)
+            loc.PassPPLL2Index = GL.GetSubroutineIndex(Program, ShaderType.FragmentShader, "passPPLL2");
+            loc.PassNormalIndex = GL.GetSubroutineIndex(Program, ShaderType.FragmentShader, "passNormal");
             loc.RenderPass = GL.GetProgramResourceLocation(Program, ProgramInterface.FragmentSubroutineUniform, "RenderPass");
         }
 
         if (loc.Position == -1)
-
             throw new Exception("cannot find location!");
 
         return loc;
@@ -439,7 +409,6 @@ public abstract class GLObject
     /// 内部的には、静的メソッド Generate(int program, GLObject[] objs)を呼び出す。
     /// </summary>
     /// <param name="program"></param>
-    // public void Generate(int program) => Generate(program, [this]);
     public void Generate(int program, int contextKey = 0) => Generate(program, [this], contextKey); // (260319Ch) 呼び出し元 control の context key を伝搬する
 
     /// レンダリングを実行. Progaramが正しくセットされていない(Generate()をしていない)場合は例外が発生
@@ -452,26 +421,24 @@ public abstract class GLObject
         GL.UseProgram(Program);
         var location = Location[(ContextKey, Program)]; // (260319Ch) location cache は current control の context key で引く
         var isText = this is TextObject;
-        // if (shaderPathPrms.Program != Program || shaderPathPrms.IsText != isText)
-        { // (260319Ch) subroutine state は context ごとなので、複数 GLControl では毎回明示する
-            if (location.VertexPathLocation != -1)
-            {
-                var vertexIndex = isText ? location.VertexTextIndex : location.VertexMeshIndex;
-                if (vertexIndex != -1)
-                    GL.UniformSubroutines(ShaderType.VertexShader, 1, ref vertexIndex);
-            }
+        // (260319Ch) subroutine state は context ごとなので、複数 GLControl では毎回明示する
+        if (location.VertexPathLocation != -1)
+        {
+            var vertexIndex = isText ? location.VertexTextIndex : location.VertexMeshIndex;
+            if (vertexIndex != -1)
+                GL.UniformSubroutines(ShaderType.VertexShader, 1, ref vertexIndex);
+        }
 
-            if (location.RenderPass != -1 && CurrentFragmentRenderPassIndex != -1)
-            {
-                var renderPassIndex = CurrentFragmentRenderPassIndex;
-                GL.UniformSubroutines(ShaderType.FragmentShader, 1, ref renderPassIndex); // (260319Ch) PPLL pass1/pass2 は UseProgram 後に設定し直す
-            }
-            else if (location.FragmentPathLocation != -1 && location.RenderPass == -1)
-            {
-                var fragmentIndex = isText ? location.FragmentTextIndex : location.FragmentSurfaceIndex;
-                if (fragmentIndex != -1)
-                    GL.UniformSubroutines(ShaderType.FragmentShader, 1, ref fragmentIndex);
-            }
+        if (location.RenderPass != -1 && CurrentFragmentRenderPassIndex != -1)
+        {
+            var renderPassIndex = CurrentFragmentRenderPassIndex;
+            GL.UniformSubroutines(ShaderType.FragmentShader, 1, ref renderPassIndex); // (260319Ch) PPLL pass1/pass2 は UseProgram 後に設定し直す
+        }
+        else if (location.FragmentPathLocation != -1 && location.RenderPass == -1)
+        {
+            var fragmentIndex = isText ? location.FragmentTextIndex : location.FragmentSurfaceIndex;
+            if (fragmentIndex != -1)
+                GL.UniformSubroutines(ShaderType.FragmentShader, 1, ref fragmentIndex);
         }
 
         if (this is TextObject text && text.TextureNum != -1)
@@ -479,42 +446,38 @@ public abstract class GLObject
             GL.ActiveTexture(TextureUnit.Texture0); // (260319Ch) PPLL 合成後でも text sampler が常に unit 0 を向くよう明示する
             GL.Uniform1(location.Texture, 0);
             GL.BindTexture(TextureTarget.Texture2D, text.TextureNum);
-            GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Nearest);
-            GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Nearest);
-            GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)TextureWrapMode.ClampToBorder);
-            GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)TextureWrapMode.ClampToBorder);
+            // 260717Cl 変更: TexParameter (Nearest/ClampToBorder) は texture object の状態なので、生成時 (TextObject コンストラクタ) の1回設定へ移動
         }
 
-        // if ((Mode == DrawingMode.SurfacesAndEdges || Mode == DrawingMode.Edges) && LineWidth != LineWidthStatic)
         if (Mode == DrawingMode.SurfacesAndEdges || Mode == DrawingMode.Edges)
             GL.LineWidth(LineWidth); // (260319Ch) 線幅 state は context ごとなので毎回設定する
 
-        GL.BindVertexArray(Obj.VAO);
-        GL.BindBuffer(BufferTarget.ElementArrayBuffer, Obj.EBO);
+        GL.BindVertexArray(Obj.VAO); // 260717Cl 変更: EBO は VAO 状態として Generate 時に記録済みのため、毎描画の再バインドを削除
 
         int offset = 0;
-        
+
         foreach (var (t, len) in Primitives)
         {
             if ((t == PT.Triangles || t == PT.TriangleStrip || t == PT.TriangleFan)
                 && (Mode == DrawingMode.Surfaces || Mode == DrawingMode.SurfacesAndEdges || Mode == DrawingMode.Text))
-                SetMaterialAndDrawElements(true, t, len, offset);
+                SetMaterialAndDrawElements(location, true, t, len, offset);
             else
             {
                 if ((t == PT.Lines || t == PT.LinesAdjacency || t == PT.LineLoop || t == PT.LineStrip) && (Mode == DrawingMode.Edges || Mode == DrawingMode.SurfacesAndEdges))
-                    SetMaterialAndDrawElements(false, t, len, offset);
+                    SetMaterialAndDrawElements(location, false, t, len, offset);
                 else if (t == PT.Points && Mode == DrawingMode.Points)
-                    SetMaterialAndDrawElements(false, t, len, offset);
+                    SetMaterialAndDrawElements(location, false, t, len, offset);
             }
             offset += len * sizeOfUInt;
         }
     }
 
     /// <summary>物体の材質と要素をGPUに送信する。Render()関数から呼び出される。</summary>
+    /// <param name="location">呼び出し元で取得済みの location cache (260717Cl 追加: primitive 毎の辞書引きを避ける)</param>
     /// <param name="drawSurfaces">Surfaceモードか否か</param>
-    private void SetMaterialAndDrawElements(bool drawSurfaces, PT mode, int count, int offset)
+    // 旧: private void SetMaterialAndDrawElements(bool drawSurfaces, PT mode, int count, int offset) // 260717Cl 変更: location を引数で受ける
+    private void SetMaterialAndDrawElements(Location location, bool drawSurfaces, PT mode, int count, int offset)
     {
-        var location = Location[(ContextKey, Program)]; // (260319Ch) 別 context の uniform location を参照しない
         var renew = prms.ContextKey != ContextKey || prms.Program != Program;
 
         if (renew || prms.objmatrix != ObjectMatrix)
@@ -547,20 +510,10 @@ public abstract class GLObject
         if (renew || prms.ignoreNormal != IgnoreNormalSides)
             GL.Uniform1(location.IgnoreNormalSides, IgnoreNormalSides ? 1 : 0);
 
-        //if (IgnoreNormalSides)
-        //{
-        //    GLable(false, EnableCap.CullFace);//CullFace無効化
-        //    GL.DrawElements(mode, count, DrawElementsType.UnsignedInt, offset);
-        //    GL.GetUniformSubroutine(ShaderType.FragmentShader, RenderPassLocation, out int renderPassIndex);  //レンダーパスを取得
-        //    GLable(renderPassIndex == PassNormalIndex, EnableCap.CullFace);//CullFaceを元に戻す
-        //}
-        //else
         GL.DrawElements(mode, count, DrawElementsType.UnsignedInt, offset);//CullFaceは常に無効
 
         prms = (ContextKey, Program, emi, amb, dif, spe, Material.SpecularPower, Material.Argb, IgnoreNormalSides, UseFixedArgb, ObjectMatrix); // (260319Ch) uniform cache も context を跨がない
     }
-    // static private (int Program, float emi, float amb, float dif, float spe, float spePow, int argb, bool ignoreNormal, bool UseFixedArgb, M4f objmatrix)
-    //      prms = (-1, 0, 0, 0, 0, 0, 0, false, false, M4f.Identity);
     static private (int ContextKey, int Program, float emi, float amb, float dif, float spe, float spePow, int argb, bool ignoreNormal, bool UseFixedArgb, M4f objmatrix)
          prms = (0, -1, 0, 0, 0, 0, 0, 0, false, false, M4f.Identity); // (260319Ch) 複数 GLControl で uniform cache が干渉しないよう context key を含める
 
@@ -576,17 +529,39 @@ public abstract class GLObject
         GL.UseProgram(Program); // (260319Ch) clip uniform 更新前に現在の object program を明示する
         var activeRenderPassIndex = CurrentFragmentRenderPassIndex; // (260319Ch) clip の stencil/path 切替後も現在の OIT pass を復元できるよう保持する
 
+        // 260717Cl 変更: All / Any / Select+Where の3回列挙を一回のループへ統合 (判定式は従来と同一)
+        var allInside = true;   //全てのクリップ面の内側か
+        var anyOutside = false; //いずれかのクリップ面の完全外側か
+        List<int> crossingList = null; //外接球と交差するクリップ面の index
+        if (clip != null)
+        {
+            var prmsD = CollectionsMarshal.AsSpan(clip.PrmsD);
+            for (int i = 0; i < prmsD.Length; i++)
+            {
+                var dot = V4d.Dot(prmsD[i], CircumscribedSphereCenter);
+                if (dot - CircumscribedSphereRadius <= 0)
+                    allInside = false;
+                if (dot + CircumscribedSphereRadius < 0)
+                {
+                    anyOutside = true;
+                    break; //完全外側なら描画しないため、以降の判定は不要
+                }
+                if (Math.Abs(dot) < CircumscribedSphereRadius)
+                    (crossingList ??= []).Add(i);
+            }
+        }
+
         //クリップ無効か、有効だが全てのクリップ面の内側にある場合
-        if (clip == null || clip.PrmsD.Count == 0 || clip.PrmsD.All(p => V4d.Dot(p, CircumscribedSphereCenter) - CircumscribedSphereRadius > 0))
+        if (clip == null || clip.PrmsD.Count == 0 || allInside)
         {
             Render();
         }
-        else if (!clip.PrmsD.Any(p => V4d.Dot(p, CircumscribedSphereCenter) + CircumscribedSphereRadius < 0))//クリップ有効でクリップ面を切るようなオブジェクトの場合
+        else if (!anyOutside)//クリップ有効でクリップ面を切るようなオブジェクトの場合
         {
             if (clip.PrmsD.Count < 200)//クリップ面が多すぎる場合は計算しない
             {
-                //クリップ対象となるクリップ平面を検索
-                var indices = clip.PrmsD.Select((p, i) => Math.Abs(V4d.Dot(p, CircumscribedSphereCenter)) < CircumscribedSphereRadius ? i : -1).Where(i => i != -1);
+                //クリップ対象となるクリップ平面
+                int[] indices = crossingList != null ? [.. crossingList] : [];
                 if (!ShowClippedSection)//クリップセクションを表示しない場合
                 {
                     clip.EnableClips(Program, indices);//全クリップ有効化 // (260319Ch) mesh/text の各 program に対して clip uniform を設定する
@@ -595,13 +570,14 @@ public abstract class GLObject
                 }
                 else///クリップセクションを表示する場合
                 {
+                    var location = Location[(ContextKey, Program)]; // 260717Cl 追加: ループ内の辞書引きを1回に
                     GL.Enable(EnableCap.StencilTest);//Stencilテスト有効
                     foreach (var i in indices)
                     {
                         DepthTest(false);//Depthテスト無効
 
-                        if (Location[(ContextKey, Program)].PassNormalIndex != -1)//PPLLモードの場合は
-                            GL.UniformSubroutines(ShaderType.FragmentShader, 1, ref Location[(ContextKey, Program)].PassNormalIndex);//サブルーチンをNormalにする
+                        if (location.PassNormalIndex != -1)//PPLLモードの場合は
+                            GL.UniformSubroutines(ShaderType.FragmentShader, 1, ref location.PassNormalIndex);//サブルーチンをNormalにする
 
                         GL.Clear(ClearBufferMask.StencilBufferBit);//ステンシルバッファークリア
                         GL.ColorMask(false, false, false, false); //色は全くかきこまない
@@ -622,9 +598,6 @@ public abstract class GLObject
                         //ここまででステンシル完成(0以外が有効)
 
                         //ここからクリップ平面を描画
-                        // if (Location[(ContextKey, Program)].PassPPLL1Index != -1)//PPLLモードの場合は
-                        // if (Location[(ContextKey, Program)].PassPPLL1Index != -1 && CurrentFragmentRenderPassIndex == Location[(ContextKey, Program)].PassPPLL1Index)
-                        //     GL.UniformSubroutines(ShaderType.FragmentShader, 1, ref Location[(ContextKey, Program)].PassPPLL1Index);//サブルーチンをPPLL1に戻す
                         if (activeRenderPassIndex != -1)
                             GL.UniformSubroutines(ShaderType.FragmentShader, 1, ref activeRenderPassIndex); // (260319Ch) PPLL だけでなく DDP でも clip plane を現在の render pass へ戻す
 
@@ -633,9 +606,6 @@ public abstract class GLObject
                         GL.Disable(EnableCap.CullFace);//CullFace無効化
                         GL.UseProgram(Program); // (260319Ch) clip plane 描画後に対象 object の program へ戻す
                         clip.EnableClips(Program, indices.Where(j => j != i));//i番目のクリップ以外を有効化
-                        // DepthTest(Location[(ContextKey, Program)].PassNormalIndex == -1);//Depthテストを元に戻す (Z-sortモードは有効)
-                        // var restoreDepthTest = Location[(ContextKey, Program)].PassNormalIndex == -1 || CurrentFragmentRenderPassIndex == Location[(ContextKey, Program)].PassNormalIndex;
-                        // DepthTest(restoreDepthTest); // (260319Ch) ZSORT/PPLL prepass/PPLL pass1 で元の depth state を正しく復元する
                         DepthTest(CurrentDepthTestEnabled); // (260319Ch) ZSORT / PPLL / DDP すべてで現在の phase の depth state をそのまま復元する
                         clip.Render(i, Material);//i番目のクリップ面を描画
                     }
@@ -669,6 +639,9 @@ public abstract class GLObject
 /// <summary>描画範囲をクリップ(切り取る)する.</summary>
 public class Clip
 {
+    /// <summary>同時に有効化できるクリップ面の上限. シェーダ側 (vert.c / fragZSORT.c 等) の ClipPlanes[8] と一致させる. 260717Cl 追加</summary>
+    public const int MaxClipPlanes = 8;
+
     private readonly List<Quads> Planes = [];
     private readonly List<float> PrmsF = [];
     public List<V4d> PrmsD = [];
@@ -682,8 +655,6 @@ public class Clip
             var prms = planeParams[i] / new V3d(planeParams[i]).Length;
             var norm = new V3d(prms);
             var rot = GLGeometry.CreateRotationFromZ(norm);
-
-           //var rot2 =  rot * norm;
 
             var pts = new[] { new V3d(100, 0, 0), new V3d(0, 100, 0), new V3d(-100, 0, 0), new V3d(0, -100, 0) };
             for (int j = 0; j < pts.Length; j++)
@@ -723,42 +694,30 @@ public class Clip
         if (!ProgramLocations.TryGetValue(program, out var locations))
             return;
 
-        // int count = indices.Count();
         var enabledIndices = indices as int[] ?? indices.ToArray(); // (260319Ch) Count/Contains の多重列挙を避ける
-        int count = enabledIndices.Length;
+        // 260717Cl 変更: シェーダ側 ClipPlanes[MaxClipPlanes] を超える面数は GLSL 配列外読みや ClipDistance の不正 enum になるため上限で打ち切る
+        // (従来は 9 面以上同時交差で未定義動作だった。打ち切り時は先頭 MaxClipPlanes 面のみ適用となり正確な描画は保証されない)
+        Debug.Assert(enabledIndices.Length <= MaxClipPlanes, $"同時に有効化できるクリップ面は {MaxClipPlanes} 枚まで (要求: {enabledIndices.Length})");
+        int count = Math.Min(enabledIndices.Length, MaxClipPlanes);
         GL.Uniform1(locations.ClipNumLocation, count);
 
         for (int i = 0; i < count; i++)
             GL.Enable(EnableCap.ClipDistance0 + i);
-        for (int i = count; i < 8; i++)
+        for (int i = count; i < MaxClipPlanes; i++)
             GL.Disable(EnableCap.ClipDistance0 + i);
 
         if (count > 0)
         {
             var prmsSpan = CollectionsMarshal.AsSpan(PrmsF);
-            var clipPlanes = ArrayPool<float>.Shared.Rent(count * 4); // (260319Ch) 頻繁なクリップ切替の短命配列をプールする
-            try
-            {
-                for (int i = 0; i < count; i++)
-                {
-                    int srcOffset = enabledIndices[i] * 4;
-                    int dstOffset = i * 4;
-                    clipPlanes[dstOffset] = prmsSpan[srcOffset];
-                    clipPlanes[dstOffset + 1] = prmsSpan[srcOffset + 1];
-                    clipPlanes[dstOffset + 2] = prmsSpan[srcOffset + 2];
-                    clipPlanes[dstOffset + 3] = prmsSpan[srcOffset + 3];
-                }
-                GL.Uniform4(locations.ClipPlanesLocation, count, clipPlanes);
-            }
-            finally
-            {
-                ArrayPool<float>.Shared.Return(clipPlanes, clearArray: false);
-            }
+            Span<float> clipPlanes = stackalloc float[MaxClipPlanes * 4]; // 260717Cl 変更: 上限が小さい定数なので ArrayPool より stackalloc が簡潔かつ高速
+            for (int i = 0; i < count; i++)
+                prmsSpan.Slice(enabledIndices[i] * 4, 4).CopyTo(clipPlanes.Slice(i * 4, 4));
+            GL.Uniform4(locations.ClipPlanesLocation, count, ref clipPlanes[0]);
         }
     }
     public static void DisableAllClips()
     {
-        for (int i = 0; i < 8; i++)
+        for (int i = 0; i < MaxClipPlanes; i++)
             GL.Disable(EnableCap.ClipDistance0 + i);
     }
 }
@@ -772,11 +731,16 @@ public class Lines : GLObject
         ShowClippedSection = false;//クリップ断面は表示しない
         IgnoreNormalSides = true;//裏表を無視する
         LineWidth = lineWidth;
-        var center = TkEx.Average(vertices);// new V3d(vertices.Average(v => v.X), vertices.Average(v => v.Y), vertices.Average(v => v.Z));
+        var center = TkEx.Average(vertices);
         CircumscribedSphereCenter = new V4d(center, 1);
-        CircumscribedSphereRadius = vertices.Max(v => (v - center).Length);
-        Vertices = vertices.Select(v => new Vertex(v.ToV3f(), mat.Argb)).ToArray();
-        Indices = ValueEnumerable.Range(0, vertices.Length).Select(i => (uint)i).ToArray();
+        CircumscribedSphereRadius = Math.Sqrt(vertices.Max(v => (v - center).LengthSquared)); // 260717Cl 変更: 要素毎の sqrt を最後の1回に (sqrt は単調なので結果は同一)
+        Vertices = new Vertex[vertices.Length]; // 260717Cl 変更: LINQ の中間確保をやめ直接書き込み
+        Indices = new uint[vertices.Length];
+        for (int i = 0; i < vertices.Length; i++)
+        {
+            Vertices[i] = new Vertex(vertices[i].ToV3f(), mat.Argb);
+            Indices[i] = (uint)i;
+        }
         Primitives = [(PT.LineStrip, vertices.Length)];
     }
 }
@@ -792,7 +756,7 @@ public class Polygon : GLObject
     public Polygon(Vector3DBase[] vertices, Material mat, DrawingMode mode)
         : this(vertices.Select(v => new V3d(v.X, v.Y, v.Z)).ToArray(), mat, mode) { }
 
-    public Polygon(Material mat, DrawingMode mode, params V3d[] vertices) : this(vertices.ToArray(), mat, mode) { }
+    public Polygon(Material mat, DrawingMode mode, params V3d[] vertices) : this(vertices, mat, mode) { } // 260717Cl 変更: params 配列は呼び出し毎に新規なので複製不要
 
     /// <summary></summary>
     /// <param name="vertices"></param>
@@ -809,9 +773,9 @@ public class Polygon : GLObject
         {
             var center = (vecs[0] + vecs[1] + vecs[2]) / 3;
             CircumscribedSphereCenter = new V4d(center, 1);
-            CircumscribedSphereRadius = vecs.Max(v => (v - center).Length);
+            CircumscribedSphereRadius = Math.Sqrt(vecs.Max(v => (v - center).LengthSquared)); // 260717Cl 変更: sqrt を1回に
             var normF = V3d.Cross(vecs[0] - vecs[1], vecs[1] - vecs[2]).ToV3f();
-            Vertices = [.. vecs.Select(p => new Vertex(p.ToV3f(), normF, mat.Argb))];
+            Vertices = [new Vertex(vecs[0].ToV3f(), normF, mat.Argb), new Vertex(vecs[1].ToV3f(), normF, mat.Argb), new Vertex(vecs[2].ToV3f(), normF, mat.Argb)]; // 260717Cl 変更: LINQ を展開
             Indices = [0, 1, 2, 0, 1, 2, 0, 1, 2];
             Primitives = new (PT Type, int Count)[3];
             Primitives[0] = (PT.Triangles, 3);//surfaces
@@ -820,9 +784,9 @@ public class Polygon : GLObject
         }
         else
         {
-            var center = TkEx.Average(vecs);// new V3d(vecs.Average(v => v.X), vecs.Average(v => v.Y), vecs.Average(v => v.Z));
+            var center = TkEx.Average(vecs);
             CircumscribedSphereCenter = new V4d(center, 1);
-            CircumscribedSphereRadius = vecs.Max(v => (v - center).Length);
+            CircumscribedSphereRadius = Math.Sqrt(vecs.Max(v => (v - center).LengthSquared)); // 260717Cl 変更: sqrt を1回に
             var polygonInfo = GLGeometry.PolygonInfo(vecs, V3d.Zero);
             var normF = polygonInfo.Norm.ToV3f();
             var centerF = polygonInfo.Center.ToV3f();
@@ -832,12 +796,12 @@ public class Polygon : GLObject
 
             //最終処理
             Vertices = new Vertex[vecs.Length + 1];
-            vecs.Select(p => new Vertex(p.ToV3f(), normF, mat.Argb)).ToArray().AsSpan().CopyTo(Vertices.AsSpan(0, vecs.Length));
+            for (int i = 0; i < vecs.Length; i++) // 260717Cl 変更: 中間配列を作らず直接書き込み
+                Vertices[i] = new Vertex(vecs[i].ToV3f(), normF, mat.Argb);
             Vertices[^1] = new Vertex(centerF, normF, mat.Argb);
 
             Indices = new uint[indicesArray.Length * 3 - 4];
             Primitives = new (PT Type, int Count)[3];
-            //260317Cl 変更: Array.Copy → Span.CopyTo
             //surfaces
             indicesArray.AsSpan().CopyTo(Indices.AsSpan(0, indicesArray.Length));
             Primitives[0] = (PT.TriangleFan, indicesList.Count);
@@ -854,8 +818,6 @@ public class Polygon : GLObject
     /// <returns></returns>
     public Polygon[] Decompose(int order = 1)
     {
-        //ここから本体
-
         V3d[] inputs;
         if (Primitives[0].Type == PT.Triangles)
             inputs = [.. Vertices.Select(v => v.Position.ToV3d())];
@@ -866,30 +828,33 @@ public class Polygon : GLObject
                 inputs[n] = Vertices[Indices[i]].Position.ToV3d();
         }
 
-        var outputs = decompose([.. inputs], order);
+        var outputs = decompose(inputs, order); // 260717Cl 変更: 不要な配列複製 [.. inputs] を除去 (decompose は入力を変更しない)
 
         var results = new Polygon[outputs.Length];
         for (int i = 0; i < results.Length; i++)
         {
+            var output = outputs[i];
+            var vList = new Vertex[output.Length]; // 260717Cl 変更: LINQ の中間確保をやめ直接書き込み
+            var iList = new uint[output.Length];
+            for (int j = 0; j < output.Length; j++)
+            {
+                vList[j] = new Vertex(output[j].ToV3f(), Vertices[0].Normal, Vertices[0].Argb);
+                iList[j] = (uint)j;
+            }
+
+            var center = TkEx.Average(output);
             results[i] = new Polygon(Material, Mode)
             {
                 ShowClippedSection = false,//クリップ断面は表示しない
                 IgnoreNormalSides = true,//裏表を無視する
-                Vertices = outputs[i].Select(v => new Vertex(v.ToV3f(), Vertices[0].Normal, Vertices[0].Argb)).ToArray(),
-                //260317Cl 変更: Enumerable.Range → ValueEnumerable.Range
-                Indices = ValueEnumerable.Range(0, outputs[i].Length).Select(val => (uint)val).ToArray()
+                Vertices = vList,
+                Indices = iList,
+                Primitives = [(PT.Triangles, iList.Length)],
+                CircumscribedSphereCenter = new V4d(center, 1),
+                CircumscribedSphereRadius = Math.Sqrt(output.Max(v => (v - center).LengthSquared)), // 260717Cl 変更: sqrt を1回に
+                Tag = Tag,
+                Rendered = Rendered,
             };
-
-            results[i].Primitives = [(PT.Triangles, results[i].Indices.Length)];
-
-            var center = TkEx.Average(outputs[i]);
-            results[i].CircumscribedSphereCenter = new V4d(center, 1);
-            results[i].CircumscribedSphereRadius = outputs[i].Max(v => (v - center).Length);
-
-            results[i].Tag = Tag;
-            results[i].Rendered = Rendered;
-
-            //results[i].Material.Color = new C4((float)rn.NextDouble(), (float)rn.NextDouble(), (float)rn.NextDouble(), 1);
         }
         return results;
     }
@@ -903,32 +868,27 @@ public class Polygon : GLObject
     {
         if (ord == 0)//ゼロの場合、これ以上分解しない
             return [srcVertex];
-        else
+
+        //頂点と、頂点間の中点を、交互に追加. 260717Cl 変更: サイズ確定のため List → 配列
+        var newVertices = new V3d[srcVertex.Length * 2];
+        newVertices[0] = (srcVertex[^1] + srcVertex[0]) / 2;
+        newVertices[1] = srcVertex[0];
+        for (int i = 1; i < srcVertex.Length; i++)
         {
-            //頂点と、頂点間の中点を、交互に追加. 
-            var newVertices = new List<V3d>(srcVertex.Length + 1)
-            {
-                (srcVertex[^1] + srcVertex[0]) / 2,
-                srcVertex[0]
-            };
-            for (int i = 1; i < srcVertex.Length; i++)
-            {
-                newVertices.Add((srcVertex[i - 1] + srcVertex[i]) / 2);
-                newVertices.Add(srcVertex[i]);
-            }
-
-            var center = TkEx.Average(srcVertex);//中心を算出
-
-            //中心と新しい頂点を組み合わせて、3角形を作る
-            var resultVertices = new List<V3d[]>();
-            for (int i = 0; i < newVertices.Count; i++)
-            {
-                var j = i < newVertices.Count - 1 ? i + 1 : 0;
-                resultVertices.Add([center, newVertices[i], newVertices[j]]);
-            }
-            //新しく出来た頂点群を再帰的に分割する
-            return [.. resultVertices.SelectMany(v => decompose(v, ord - 1))];
+            newVertices[i * 2] = (srcVertex[i - 1] + srcVertex[i]) / 2;
+            newVertices[i * 2 + 1] = srcVertex[i];
         }
+
+        var center = TkEx.Average(srcVertex);//中心を算出
+
+        //中心と新しい頂点を組み合わせて、3角形を作り、再帰的に分割する
+        var resultVertices = new V3d[newVertices.Length][];
+        for (int i = 0; i < newVertices.Length; i++)
+        {
+            var j = i < newVertices.Length - 1 ? i + 1 : 0;
+            resultVertices[i] = [center, newVertices[i], newVertices[j]];
+        }
+        return [.. resultVertices.SelectMany(v => decompose(v, ord - 1))];
     }
 }
 
@@ -961,22 +921,8 @@ public class Quads : Polygon
 }
 
 /// <summary>円 (ディスク)</summary>
-public class Disk(V3d origin, V3d normal, double radius, Material mat, DrawingMode mode, int slices = 60) : Polygon(
-         //260317Cl 変更: Enumerable.Range → ValueEnumerable.Range
-         ValueEnumerable.Range(0, slices).Select(i =>
-             {
-                var (sin, cos)= Math.SinCos((double)i / slices * 2 * Math.PI);
-                 var p = radius * new V2d(sin, cos);
-                 M3d rot;
-                 if (normal == vZ)
-                     rot = M3d.Identity;
-                 else
-                     rot = M3d.CreateFromAxisAngle(V3d.Cross(normal, vZ), V3d.CalculateAngle(vZ, normal));
-                 var x = rot.M11 * p.X + rot.M12 * p.Y + origin.X;
-                 var y = rot.M21 * p.X + rot.M22 * p.Y + origin.Y;
-                 var z = rot.M31 * p.X + rot.M32 * p.Y + origin.Z;
-                 return new V3d(x, y, z);
-             }).ToArray(), mat, mode)
+public class Disk(V3d origin, V3d normal, double radius, Material mat, DrawingMode mode, int slices = 60)
+    : Polygon(CreateCircleVertices(origin, normal, radius, slices), mat, mode)
 {
     public Disk(Vector3DBase origin, Vector3DBase normal, double radius, Material mat, DrawingMode mode, int slices = 60)
         : this(new V3d(origin.X, origin.Y, origin.Z), new V3d(normal.X, normal.Y, normal.Z), radius, mat, mode, slices) { }
@@ -984,6 +930,23 @@ public class Disk(V3d origin, V3d normal, double radius, Material mat, DrawingMo
     public Disk(V3d origin, V3d normal, double radius, float lineWidth, Material mat, DrawingMode mode, int slices = 60)
         : this(origin, normal, radius, mat, mode, slices)
     { LineWidth = lineWidth; }
+
+    /// <summary>260717Cl 追加: 円周頂点の生成。回転行列を頂点毎ではなく1回だけ計算する</summary>
+    private static V3d[] CreateCircleVertices(in V3d origin, in V3d normal, double radius, int slices)
+    {
+        var rot = GLGeometry.CreateRotationFromZ(normal); // 260718Cl 変更: Pipe/Clip と同じ helper に集約 (vZ=(0,0,1) なので軸・角は従来と同一。CreateFromAxisAngle は軸を内部正規化し CalculateAngle はスケール不変。normal≈-Z の退化ケースも helper 側で正しく処理される)
+        var vertices = new V3d[slices];
+        for (int i = 0; i < slices; i++)
+        {
+            var (sin, cos) = Math.SinCos((double)i / slices * 2 * Math.PI);
+            var p = radius * new V2d(sin, cos);
+            vertices[i] = new V3d(
+                rot.M11 * p.X + rot.M12 * p.Y + origin.X,
+                rot.M21 * p.X + rot.M22 * p.Y + origin.Y,
+                rot.M31 * p.X + rot.M32 * p.Y + origin.Z);
+        }
+        return vertices;
+    }
 }
 
 /// <summary>穴あきディスク</summary>
@@ -1002,59 +965,41 @@ public class HoledDisk : GLObject
         CircumscribedSphereCenter = new V4d(origin, 1);
         CircumscribedSphereRadius = RadiusOuter;
 
-        //260317Cl 変更: Enumerable.Range → ValueEnumerable.Range
         var t = ValueEnumerable.Range(0, slices).Select(i => Math.SinCos((double)i / slices * 2 * Math.PI)).ToArray();
-        //var coss = Enumerable.Range(0, slices).Select(i => Math.Cos((double)i / slices * 2 * Math.PI)).ToArray();
 
         IgnoreNormalSides = true;
 
-        M3d rotMat;
-        if (normal == vZ)
-            rotMat = M3d.Identity;
-        else
-            rotMat = M3d.CreateFromAxisAngle(V3d.Cross(normal, vZ), V3d.CalculateAngle(vZ, normal));
+        var rotMat = GLGeometry.CreateRotationFromZ(normal); // 260718Cl 変更: Disk と同様に helper へ集約 (従来と軸・角は同一)
 
         var vertices = new V3d[slices * 2];
 
         for (int i = 0; i < slices; i++)
         {
             vertices[i] = new V3d(RadiusOuter * t[i].Sin, RadiusOuter * t[i].Cos, 0);
-            vertices[i+slices] = new V3d(RadiusInner * t[i].Sin, RadiusInner * t[i].Cos, 0);
+            vertices[i + slices] = new V3d(RadiusInner * t[i].Sin, RadiusInner * t[i].Cos, 0);
         }
 
-        List<int> indicesTmp = [];
-        for (int i = 0; i < slices; i++)
+        // 260717Cl 変更: List+AddRange の多段結合を、サイズ確定済み配列への直接書き込みへ (並びは従来と同一)
+        var triCount = slices * 6;
+        Indices = new uint[triCount * 2 + vertices.Length];
+        for (int i = 0, n = 0; i < slices; i++)
         {
-            if (i < slices - 1) {
-                //indicesTmp.AddRange([i, i + 1, i + slices + 1, i + slices]);
-                indicesTmp.AddRange([i, i + 1, i + slices + 1]);
-                indicesTmp.AddRange([i, i + slices + 1, i + slices]);
-            }
-            else { 
-                //indicesTmp.AddRange([i, 0, slices + 1, i + slices]);
-                indicesTmp.AddRange([i, 0, slices + 1]);
-                indicesTmp.AddRange([i, slices + 1, i + slices]);
-            }
+            uint i0 = (uint)i;
+            uint i1 = i < slices - 1 ? (uint)(i + 1) : 0u;
+            uint i2 = (uint)(i < slices - 1 ? i + slices + 1 : slices + 1);
+            uint i3 = (uint)(i + slices);
+            Indices[n++] = i0; Indices[n++] = i1; Indices[n++] = i2;
+            Indices[n++] = i0; Indices[n++] = i2; Indices[n++] = i3;
         }
-        var types = new List<PT>();
-        var indices = new List<int[]>();
+        Array.Copy(Indices, 0, Indices, triCount, triCount); //LineLoop も同じ並びを使う
+        for (int i = 0; i < vertices.Length; i++)
+            Indices[triCount * 2 + i] = (uint)i; //Points
 
-        types.Add(PT.Triangles);
-        indices.Add([.. indicesTmp]);
-
-        types.Add(PT.LineLoop);
-        indices.Add([.. indicesTmp]);
-
-        types.Add(PT.Points);
-        indices.Add([.. ValueEnumerable.Range(0, vertices.Length)]);
+        Primitives = [(PT.Triangles, triCount), (PT.LineLoop, triCount), (PT.Points, vertices.Length)];
 
         Vertices = new Vertex[vertices.Length];
         for (int i = 0; i < vertices.Length; i++)
             Vertices[i] = new Vertex((rotMat * vertices[i] + origin).ToV3f(), normal.ToV3f(), mat.Argb);
-
-        Indices = indices.SelectMany(i => i).Select(i => (uint)i).ToArray();
-
-        Primitives = types.Select((t, i) => (t, indices[i].Length)).ToArray();
     }
 
     public HoledDisk(Vector3DBase origin, Vector3DBase normal, double radius1, double radius2, Material mat, DrawingMode mode, int slices = 60)
@@ -1080,14 +1025,14 @@ public class Polyhedron : GLObject
     /// <param name="mode"></param>
     public Polyhedron(IEnumerable<V3d> vertices, Material mat, DrawingMode mode) : base(mat, mode)
     {
-        var center = TkEx.Average(vertices);
+        var vrs = vertices as V3d[] ?? vertices.ToArray(); // 260717Cl 変更: IEnumerable の多重列挙 (Average/Max/ToArray) を避けるため最初に一度だけ配列化
+        var center = TkEx.Average(vrs);
         CircumscribedSphereCenter = new V4d(center, 1);
-        CircumscribedSphereRadius = vertices.Max(v => (v - center).Length);
+        CircumscribedSphereRadius = Math.Sqrt(vrs.Max(v => (v - center).LengthSquared)); // 260717Cl 変更: sqrt を1回に
 
         //任意の三点を選び、平面方程式を作り、それらが最も端面であるかを評価し、端面である場合はリストに加える
         var candidates = new List<V3d[]>();
 
-        var vrs = vertices.ToArray();
         for (int i = 0; i < vrs.Length - 2; i++)
             for (int j = i + 1; j < vrs.Length - 1; j++)
                 for (int k = j + 1; k < vrs.Length; k++)
@@ -1095,7 +1040,17 @@ public class Polyhedron : GLObject
                     V3d A = vrs[i], B = vrs[j], C = vrs[k];
                     var V = V3d.Cross(C - A, A - B);
 
-                    if (vrs.All(v => V3d.Dot(v - A, V) < 0.0000001) || vrs.All(v => V3d.Dot(v - A, V) > -0.0000001))
+                    // 260717Cl 変更: 2回の All 走査を1回のループに統合 (判定式・閾値は従来と同一)
+                    bool anyPositive = false, anyNegative = false; //平面の両側に頂点があるか
+                    foreach (var v in vrs)
+                    {
+                        var dot = V3d.Dot(v - A, V);
+                        if (dot >= 0.0000001) anyPositive = true;
+                        if (dot <= -0.0000001) anyNegative = true;
+                        if (anyPositive && anyNegative) break; //両側にあれば端面ではない
+                    }
+
+                    if (!anyPositive || !anyNegative)
                         if (candidates.All(cand => !(cand.Contains(A) && cand.Contains(B) && cand.Contains(C))))
                             candidates.Add([.. vrs.Where(v => Math.Abs(V3d.Dot(v - A, V)) < 0.0000001)]);
                 }
@@ -1110,7 +1065,8 @@ public class Polyhedron : GLObject
             if (cand.Length == 3)
             {
                 var norm = V3d.Cross(cand[0] - cand[1], cand[2] - cand[1]).ToV3f();
-                vList.AddRange(cand.Select(p => new Vertex(p.ToV3f(), norm, mat.Argb)));//多面体頂点を追加
+                foreach (var p in cand) // 260717Cl 変更: Select の遅延列挙をやめ直接追加
+                    vList.Add(new Vertex(p.ToV3f(), norm, mat.Argb));//多面体頂点を追加
 
                 for(int i = 0;i<3; i++)
                     iList2.Add([offset + 0, offset + 1, offset + 2]);
@@ -1121,8 +1077,10 @@ public class Polyhedron : GLObject
             {
                 var polygonInfo = GLGeometry.PolygonInfo(cand, center);
 
-                vList.AddRange(cand.Select(p => new Vertex(p.ToV3f(), polygonInfo.Norm.ToV3f(), mat.Argb)));//多面体頂点を追加
-                vList.Add(new Vertex(polygonInfo.Center.ToV3f(), polygonInfo.Norm.ToV3f(), mat.Argb));//多面体中心を追加
+                var normF = polygonInfo.Norm.ToV3f(); // 260717Cl 追加: 頂点毎の再変換を避ける
+                foreach (var p in cand)
+                    vList.Add(new Vertex(p.ToV3f(), normF, mat.Argb));//多面体頂点を追加
+                vList.Add(new Vertex(polygonInfo.Center.ToV3f(), normF, mat.Argb));//多面体中心を追加
 
                 var iTemp = new List<uint>([(uint)(vList.Count - 1)]);//多面体中心のインデックスを追加
                 var offsetIndices = polygonInfo.Indices.Select(n => n + offset).ToList();
@@ -1164,7 +1122,8 @@ public class Polyhedron : GLObject
 
             Array.Copy(Indices, offsetIndices, p[i].Indices, 0, p[i].Indices.Length);
 
-            p[i].Indices = [.. p[i].Indices.Select(j => (uint)(j - offsetVertices))];
+            for (int j = 0; j < p[i].Indices.Length; j++) // 260717Cl 変更: Select による配列再確保をやめ in-place でシフト
+                p[i].Indices[j] -= (uint)offsetVertices;
             offsetIndices += p[i].Indices.Length;
 
             p[i].Vertices = new Vertex[p[i].Indices.Distinct().Count()];
@@ -1173,7 +1132,7 @@ public class Polyhedron : GLObject
 
             var center = TkEx.Average(p[i].Vertices.Select(e => e.Position));
             p[i].CircumscribedSphereCenter = new V4d(center, 1);
-            p[i].CircumscribedSphereRadius = p[i].Vertices.Max(v => (v.Position - center).Length);
+            p[i].CircumscribedSphereRadius = MathF.Sqrt(p[i].Vertices.Max(v => (v.Position - center).LengthSquared)); // 260717Cl 変更: sqrt を1回に (V3f.Length と同じ MathF.Sqrt で従来とビット一致)
             p[i].Rendered = Rendered;
             p[i].IgnoreNormalSides = true;
             p[i].ShowClippedSection = false;
@@ -1269,38 +1228,29 @@ public class Ellipsoid : GLObject
                     Vertices[j++] = new Vertex(v.ToV3f(), n.ToV3f(), mat.Argb);
                 }
 
-        var types = new List<PT>(3);
-        var indices = new List<int[]>();
-
-        types.Add(PT.Points);
-        //260317Cl 変更: Enumerable.Range → ValueEnumerable.Range
-        indices.Add([.. ValueEnumerable.Range(0, Vertices.Length)]);
-
-        var indexListSurfaces = new List<int>(16 * rot.Length * slices * slices);
-        var indexListEdges = new List<int>(rot.Length * 8 * (slices * slices * 2 + slices));
+        // 260717Cl 変更: List+AddRange の多段結合を、サイズ確定済み配列への直接書き込みへ (並びは従来と同一: Points → Triangles → Lines)
+        var side = 2 * slices;
+        var pointCount = Vertices.Length;
+        var surfaceCount = rot.Length * side * side * 6;
+        var edgeCount = rot.Length * (side * side * 4 + side * 4);
+        Indices = new uint[pointCount + surfaceCount + edgeCount];
+        for (int i = 0; i < pointCount; i++)
+            Indices[i] = (uint)i;
+        int ns = pointCount, ne = pointCount + surfaceCount;
         for (int i = 0; i < rot.Length; i++)
-            for (int h = 0; h < 2 * slices; h++)
-                for (int w = 0; w < 2 * slices; w++)
+            for (int h = 0; h < side; h++)
+                for (int w = 0; w < side; w++)
                 {
-                    int current = i * (2 * slices + 1) * (2 * slices + 1) + h * (2 * slices + 1) + w;
-                    //indexListSurfaces.AddRange([current, current + 1, current + 2 * slices + 2, current + 2 * slices + 1]);
-                    indexListSurfaces.AddRange([current, current + 1, current + 2 * slices + 2]);
-                    indexListSurfaces.AddRange([current,  current + 2 * slices + 2, current + 2 * slices + 1]);
+                    var current = (uint)(i * (side + 1) * (side + 1) + h * (side + 1) + w);
+                    uint right = current + 1, below = current + (uint)side + 1, belowRight = current + (uint)side + 2;
+                    Indices[ns++] = current; Indices[ns++] = right; Indices[ns++] = belowRight;
+                    Indices[ns++] = current; Indices[ns++] = belowRight; Indices[ns++] = below;
 
-                    indexListEdges.AddRange([current, current + 1, current, current + 2 * slices + 1]);
-                    if (h == 2 * slices - 1)
-                        indexListEdges.AddRange([current + 2 * slices + 2, current + 2 * slices + 1]);
-                    if (w == 2 * slices - 1)
-                        indexListEdges.AddRange([current + 1, current + 2 * slices + 2]);
+                    Indices[ne++] = current; Indices[ne++] = right; Indices[ne++] = current; Indices[ne++] = below;
+                    if (h == side - 1) { Indices[ne++] = belowRight; Indices[ne++] = below; }
+                    if (w == side - 1) { Indices[ne++] = right; Indices[ne++] = belowRight; }
                 }
-        types.Add(PT.Triangles);
-        indices.Add([.. indexListSurfaces]);
-
-        types.Add(PT.Lines);
-        indices.Add([.. indexListEdges]);
-
-        Indices = indices.AsValueEnumerable().SelectMany(i => i).Select(i => (uint)i).ToArray();
-        Primitives = types.AsValueEnumerable().Select((t, i) => (t, indices[i].Length)).ToArray();
+        Primitives = [(PT.Points, pointCount), (PT.Triangles, surfaceCount), (PT.Lines, edgeCount)];
     }
 }
 
@@ -1331,7 +1281,6 @@ public class Sphere : Ellipsoid
     public static (PT Type, int Count)[] DefaultPrimitives;
 
     /// <summary>Default形状ついて、Program番号と(VBO, VAO, EBO)を対応付けるDictionary.</summary>
-    // static public Dictionary<int, (int VBO, int VAO, int EBO)> DefaultDictionary { get; set; } = [];
     static public Dictionary<(int ContextKey, int Program), (int VBO, int VAO, int EBO)> DefaultDictionary { get; set; } = []; // (260319Ch) default sphere VAO は context 単位で分離
 
     static Sphere() => SetDefaultSphere();
@@ -1439,102 +1388,90 @@ public class Pipe : GLObject
             }
         }
 
-        List<V3d> v = [], n = [];
-        List<int> c = [];
+        // 260717Cl 変更: List ベースの多段構築を、サイズ確定済み配列への直接書き込みへ (並び・値は従来と同一。
+        // Points プリミティブは従来どおり側面頂点のみを対象とし、底面用の複製頂点は含めない)
+        var sideVertexCount = (slices + 1) * stacks;
+        var hasTop = sole && r1 > 0;    //始点側の底面
+        var hasBottom = sole && r2 > 0; //終点側の底面
+        var vertexCount = sideVertexCount + (hasTop ? stacks + 1 : 0) + (hasBottom ? stacks + 1 : 0);
+        var v = new V3d[vertexCount];
+        var n = new V3d[vertexCount];
+        var c = new int[vertexCount];
+        var vc = 0;
         //まず側面
         for (int h = 0; h <= slices; h++)
             for (int t = 0; t < stacks; t++)
             {
-                var (sin, cos)=Math.SinCos((double)t / stacks * Math.PI * 2);
-                //double sin = Math.Sin((double)t / stacks * Math.PI * 2), cos = Math.Cos((double)t / stacks * Math.PI * 2);
+                var (sin, cos) = Math.SinCos((double)t / stacks * Math.PI * 2);
                 double r = r1 * (1 - (double)h / slices) + r2 * h / slices;
                 double z = (double)h / slices * height;
-                v.Add(new V3d(r * sin, r * cos, z));
-                n.Add(new V3d(r2 * height * sin, r2 * height * cos, -r2 * (r2 - r1)));
-                c.Add(h < slices / 2 ? mat1.Argb : mat2.Argb);
+                v[vc] = new V3d(r * sin, r * cos, z);
+                n[vc] = new V3d(r2 * height * sin, r2 * height * cos, -r2 * (r2 - r1));
+                c[vc++] = h < slices / 2 ? mat1.Argb : mat2.Argb;
             }
 
-        var current = 0;
-        var indiceSide = new List<int>(4 * slices * stacks);
+        var sideIndexCount = slices * stacks * 6;
+        Indices = new uint[sideIndexCount * 2 + sideVertexCount + (hasTop ? stacks + 2 : 0) + (hasBottom ? stacks + 2 : 0)];
+        var ni = 0;
         for (int h = 0; h < slices; h++)
             for (int t = 0; t < stacks; t++)
             {
-                current = h * stacks + t;
+                var current = (uint)(h * stacks + t);
+                var below = current + (uint)stacks;
                 if (t < stacks - 1)
                 {
-                    //indiceSide.AddRange([current, current + stacks, current + 1 + stacks, current + 1]);
-                    indiceSide.AddRange([current, current + stacks, current + 1 + stacks]);
-                    indiceSide.AddRange([current,  current + 1 + stacks, current + 1]);
+                    Indices[ni++] = current; Indices[ni++] = below; Indices[ni++] = below + 1;
+                    Indices[ni++] = current; Indices[ni++] = below + 1; Indices[ni++] = current + 1;
                 }
                 else
                 {
-                    //indiceSide.AddRange([current, current + stacks, current + 1, current + 1 - stacks]);
-                    indiceSide.AddRange([current, current + stacks, current + 1, ]);
-                    indiceSide.AddRange([current,  current + 1, current + 1 - stacks]);
+                    Indices[ni++] = current; Indices[ni++] = below; Indices[ni++] = current + 1;
+                    Indices[ni++] = current; Indices[ni++] = current + 1; Indices[ni++] = current + 1 - (uint)stacks;
                 }
             }
-        var types = new List<PT>();
-        var indices = new List<int[]>();
+        Array.Copy(Indices, 0, Indices, sideIndexCount, sideIndexCount); //LineLoop も同じ並びを使う
+        ni = sideIndexCount * 2;
+        for (int i = 0; i < sideVertexCount; i++)
+            Indices[ni++] = (uint)i; //Points (側面頂点のみ)
 
-        types.Add(PT.Triangles);
-        indices.Add([.. indiceSide]);
-
-        types.Add(PT.LineLoop);
-        indices.Add([.. indiceSide]);
-
-        types.Add(PT.Points);
-        indices.Add(ValueEnumerable.Range(0, v.Count).ToArray());
+        var prims = new List<(PT Type, int Count)>(5)
+        { (PT.Triangles, sideIndexCount), (PT.LineLoop, sideIndexCount), (PT.Points, sideVertexCount) };
 
         //底面
-        if (sole)
+        if (hasTop)
         {
             //始点側
-            if (r1 > 0)
+            var center = vc;
+            v[vc] = new V3d(0, 0, 0); n[vc] = -vZ; c[vc++] = mat1.Argb;
+            Indices[ni++] = (uint)center;
+            for (int t = 0; t < stacks; t++)
             {
-                v.Add(new V3d(0, 0, 0));
-                n.Add(-vZ);
-                c.Add(mat1.Argb);
-                var indicesTop = new List<int> { v.Count - 1 };
-                var center = v.Count - 1;
-                for (int t = 0; t < stacks; t++)
-                {
-                    v.Add(v[t]);
-                    n.Add(-vZ);
-                    c.Add(mat1.Argb);
-                    indicesTop.Add(v.Count - 1);
-                }
-                indicesTop.Add(v.Count - stacks);
-                types.Add(PT.TriangleFan);
-                indices.Add([.. indicesTop]);
+                v[vc] = v[t]; n[vc] = -vZ; c[vc++] = mat1.Argb;
+                Indices[ni++] = (uint)(vc - 1);
             }
+            Indices[ni++] = (uint)(center + 1); //最初のリング頂点へ戻って fan を閉じる
+            prims.Add((PT.TriangleFan, stacks + 2));
+        }
+        if (hasBottom)
+        {
             //終点側
-            if (r2 > 0)
+            var center = vc;
+            v[vc] = new V3d(0, 0, height); n[vc] = vZ; c[vc++] = mat2.Argb;
+            Indices[ni++] = (uint)center;
+            for (int t = 0; t < stacks; t++)
             {
-                v.Add(new V3d(0, 0, height));
-                n.Add(vZ);
-                c.Add(mat2.Argb);
-                var indicesBottom = new List<int> { v.Count - 1 };
-                var center = v.Count - 1;
-                for (int t = 0; t < stacks; t++)
-                {
-                    v.Add(v[(slices + 1) * stacks - t - 1]);
-                    n.Add(vZ);
-                    c.Add(mat2.Argb);
-                    indicesBottom.Add(v.Count - 1);
-                }
-                indicesBottom.Add(v.Count - stacks);
-                types.Add(PT.TriangleFan);
-                indices.Add([.. indicesBottom]);
+                v[vc] = v[(slices + 1) * stacks - t - 1]; n[vc] = vZ; c[vc++] = mat2.Argb;
+                Indices[ni++] = (uint)(vc - 1);
             }
+            Indices[ni++] = (uint)(center + 1);
+            prims.Add((PT.TriangleFan, stacks + 2));
         }
 
-        Vertices = new Vertex[v.Count];
-        for (int i = 0; i < v.Count; i++)
+        Primitives = [.. prims];
+
+        Vertices = new Vertex[vertexCount];
+        for (int i = 0; i < vertexCount; i++)
             Vertices[i] = new Vertex((rotMat * v[i] + o).ToV3f(), (rotMat * n[i]).ToV3f(), c[i]);
-
-        Indices = indices.AsValueEnumerable().SelectMany(i => i).Select(i => (uint)i).ToArray();
-
-        Primitives = types.Select((t, i) => (t, indices[i].Length)).ToArray();
     }
 }
 
@@ -1545,7 +1482,6 @@ public class Pipe : GLObject
 public class Cone : Pipe
 {
     /// <summary>Default形状ついて、Program番号と(VBO, VAO, EBO)を対応付けるDictionary.</summary>
-    // static public Dictionary<int, (int VBO, int VAO, int EBO)> DefaultDictionary { get; set; } = [];
     static public Dictionary<(int ContextKey, int Program), (int VBO, int VAO, int EBO)> DefaultDictionary { get; set; } = []; // (260319Ch) default cone VAO は context 単位で分離
 
     private static (int Slices, int Stacks) _Default = (1, 16);
@@ -1630,7 +1566,6 @@ public class Cylinder : Pipe
 
 
     /// <summary>Default形状ついて、Program番号と(VBO, VAO, EBO)を対応付けるDictionary.</summary>
-    // static public Dictionary<int, (int VBO, int VAO, int EBO)> DefaultDictionary { get; set; } = [];
     static public Dictionary<(int ContextKey, int Program), (int VBO, int VAO, int EBO)> DefaultDictionary { get; set; } = []; // (260319Ch) default cylinder VAO は context 単位で分離
 
     public new static (int Slices, int Stacks) Default { get => _Default; set { _Default = value; SetDefaultCylinder(); } }
@@ -1672,13 +1607,14 @@ public class Torus : GLObject
     public double Radius2;
 
     /// <summary>Torus (ドーナッツ).  中心(V3)、法線(V3), 大半径(double), 小半径(double)で定義される</summary>
-    /// <param name="o">中心位置</param>
-    /// <param name="a">中心位置からのベクトル1</param>
-    /// <param name="b">中心位置からのベクトル2</param>
-    /// <param name="c">中心位置からのベクトル3</param>
+    /// <param name="origin">中心位置</param>
+    /// <param name="norm">法線</param>
+    /// <param name="r1">大半径 (中心からチューブ中心まで)</param>
+    /// <param name="r2">小半径 (チューブ断面)</param>
     /// <param name="mat">素材</param>
     /// <param name="mode">描画モード</param>
-    /// <param name="slices">分割数. 6*(2*slices+1)^2 の頂点が生成される. </param>
+    /// <param name="slices1">大円周の分割数</param>
+    /// <param name="slices2">チューブ断面の分割数</param>
     public Torus(V3d origin, V3d norm, double r1, double r2, Material mat, DrawingMode mode, int slices1 = DefaultSlices1, int slices2 = DefaultSlices2) : base(mat, mode)
     {
         Origin = origin;
@@ -1689,15 +1625,16 @@ public class Torus : GLObject
         CircumscribedSphereCenter = new V4d(Origin, 1);
         CircumscribedSphereRadius = r1 + r2;
 
+        // 260717Cl 変更: List ベースの多段構築を、サイズ確定済み配列への直接書き込みへ (並び・値は従来と同一)
         //まず、中心(r1,0,0)でx軸に直交し半径r2の円の頂点を計算
-        var circleVertex = new List<(V3d Position, V3d Normal)>();
+        var ringCount = slices1 * slices2;
+        var circleVertex = new (V3d Position, V3d Normal)[ringCount];
         for (int i = 0; i < slices2; i++)
         {
             var theta = (double)i / slices2 * 2 * Math.PI;
-            var (sin,cos)=Math.SinCos(theta);
+            var (sin, cos) = Math.SinCos(theta);
             var normal = r2 * new V3d(cos, 0, sin);
-            var position = new V3d(r1, 0, 0) + normal;
-            circleVertex.Add((position, normal));
+            circleVertex[i] = (new V3d(r1, 0, 0) + normal, normal);
         }
 
         //次に、この円をZ軸の周りに回転させてすべての頂点を計算
@@ -1705,65 +1642,50 @@ public class Torus : GLObject
         {
             var rot = M3d.CreateRotationZ((double)i / slices1 * 2 * Math.PI);
             for (int j = 0; j < slices2; j++)
-                circleVertex.Add((rot * circleVertex[j].Position, rot * circleVertex[j].Normal));
+                circleVertex[i * slices2 + j] = (rot * circleVertex[j].Position, rot * circleVertex[j].Normal);
         }
-        //GLGeometry.
-        //すべての頂点を座標変換し、vListに追加
-        var vList = new List<Vertex>();
-        //var transMat = M3d.CreateFromAxisAngle(V3d.Cross(vZ, Normal), V3d.CalculateAngle(Normal, vZ)).ToMatrix4D();
+
+        //すべての頂点を座標変換
         var transMat = GLGeometry.CreateRotationToZ(norm).ToMatrix4d();
         transMat.Column3 = new V4d(origin, 1);
 
-        for (int i = 0; i < circleVertex.Count; i++)
+        //最後のslices2個は、surfacesやedgeを計算しやすくするための最初のslices2個の複製
+        Vertices = new Vertex[ringCount + slices2];
+        for (int i = 0; i < ringCount; i++)
         {
             var position = transMat * circleVertex[i].Position.ToV4d();
             var normal = transMat * circleVertex[i].Normal.ToV4d();
-            vList.Add(new Vertex(position.ToV3f(), normal.ToV3f(), mat.Argb));
+            Vertices[i] = new Vertex(position.ToV3f(), normal.ToV3f(), mat.Argb);
         }
-        //最後に、surfacesやedgeを計算しやすくするため、最初のslices個分の頂点を追加
         for (int i = 0; i < slices2; i++)
-            vList.Add(vList[i]);
+            Vertices[ringCount + i] = Vertices[i];
 
-        Vertices = [.. vList];
-
-        var types = new List<PT>();
-        var indices = new List<int[]>();
-
-        //Points
-        types.Add(PT.Points);
-        //260317Cl 変更: Enumerable.Range → ValueEnumerable.Range
-        indices.Add(ValueEnumerable.Range(0, Vertices.Length).ToArray());
-
-        //SurfacesとEdges
-        var indexListSurfaces = new List<int>();
-        var indexListEdges = new List<int>();
+        //Points → Surfaces → Edges の順で Indices を構築
+        var pointCount = Vertices.Length;
+        var surfaceCount = slices1 * slices2 * 6;
+        var edgeCount = slices1 * slices2 * 4;
+        Indices = new uint[pointCount + surfaceCount + edgeCount];
+        for (int i = 0; i < pointCount; i++)
+            Indices[i] = (uint)i;
+        int ns = pointCount, ne = pointCount + surfaceCount;
+        var s2 = (uint)slices2;
         for (int i = 0; i < slices1; i++)
             for (int j = 0; j < slices2 - 1; j++)
             {
-                int current = i * slices2 + j;
+                var current = (uint)(i * slices2 + j);
 
-                //indexListSurfaces.AddRange([current, current + 1, current + slices2 + 1, current + slices2]);
-                indexListSurfaces.AddRange([current, current + 1, current + slices2 + 1]);
-                indexListSurfaces.AddRange([current, current + slices2 + 1, current + slices2]);
-                indexListEdges.AddRange([current, current + 1, current, current + slices2]);
+                Indices[ns++] = current; Indices[ns++] = current + 1; Indices[ns++] = current + s2 + 1;
+                Indices[ns++] = current; Indices[ns++] = current + s2 + 1; Indices[ns++] = current + s2;
+                Indices[ne++] = current; Indices[ne++] = current + 1; Indices[ne++] = current; Indices[ne++] = current + s2;
 
                 if (j == 0)
                 {
-                    //indexListSurfaces.AddRange([current, current + slices2, current + 2 * slices2 - 1, current + slices2 - 1]);
-                    indexListSurfaces.AddRange([current, current + slices2, current + 2 * slices2 - 1]);
-                    indexListSurfaces.AddRange([current, current + 2 * slices2 - 1, current + slices2 - 1]);
-                    indexListEdges.AddRange([current, current + slices2, current, current + slices2 - 1]);
+                    Indices[ns++] = current; Indices[ns++] = current + s2; Indices[ns++] = current + 2 * s2 - 1;
+                    Indices[ns++] = current; Indices[ns++] = current + 2 * s2 - 1; Indices[ns++] = current + s2 - 1;
+                    Indices[ne++] = current; Indices[ne++] = current + s2; Indices[ne++] = current; Indices[ne++] = current + s2 - 1;
                 }
             }
-        types.Add(PT.Triangles);
-        indices.Add([.. indexListSurfaces]);
-
-        types.Add(PT.Lines);
-        indices.Add([.. indexListEdges]);
-
-        Indices = [.. indices.SelectMany(i => i).Select(i => (uint)i)];
-
-        Primitives = [.. types.Select((t, i) => (t, indices[i].Length))];
+        Primitives = [(PT.Points, pointCount), (PT.Triangles, surfaceCount), (PT.Lines, edgeCount)];
     }
 }
 #endregion
@@ -1778,15 +1700,16 @@ public class Mesh : GLObject
         var height = data.Length / width;
         var scale = Math.Sqrt(data.Length);
 
-        var positions = new List<V3f>();
+        var positions = new V3f[data.Length]; // 260717Cl 変更: List → サイズ確定済み配列
         for (int h = 0; h < height; h++)
             for (int w = 0; w < width; w++)
-                positions.Add(new V3f((float)((w - width / 2.0) / scale), (float)((h - height / 2.0) / scale), (float)(data[h * width + w] / max)));
+                positions[h * width + w] = new V3f((float)((w - width / 2.0) / scale), (float)((h - height / 2.0) / scale), (float)(data[h * width + w] / max));
 
         var minColor = new V4f(0.1f, 0.1f, 1f, 1);
         var maxColor = new V4f(1f, 0.1f, 0.1f, 1);
 
-        var vList = new Vertex[data.Length];
+        Vertices = new Vertex[data.Length];
+        var pts = new V3d[5]; // 260717Cl 変更: 毎頂点の List/配列確保をやめバッファを再利用 (GetPlaneEquationFromPoints は即時評価)
         for (int h = 0; h < height; h++)
             for (int w = 0; w < width; w++)
             {
@@ -1796,9 +1719,11 @@ public class Mesh : GLObject
                     norm = new V3f(0, 0, 0);
                 else
                 {
-                    var pts = new List<V3d>();
-                    foreach (var i in new[] { index, index - 1, index + 1, index - width, index + width })
-                        pts.Add(new V3d(positions[i].X, positions[i].Y, positions[i].Z));
+                    pts[0] = positions[index].ToV3d();
+                    pts[1] = positions[index - 1].ToV3d();
+                    pts[2] = positions[index + 1].ToV3d();
+                    pts[3] = positions[index - width].ToV3d();
+                    pts[4] = positions[index + width].ToV3d();
                     var param = Geometry.GetPlaneEquationFromPoints(pts);
 
                     norm = new V3f((float)param.A, (float)param.B, (float)param.C);
@@ -1806,21 +1731,21 @@ public class Mesh : GLObject
                         norm = -norm;
                 }
                 var c = positions[index].Z * maxColor + (1 - positions[index].Z) * minColor;
-                vList[index] = new Vertex(positions[index], norm, new C4(c.X, c.Y, c.Z, c.W).ToArgb());
+                Vertices[index] = new Vertex(positions[index], norm, new C4(c.X, c.Y, c.Z, c.W).ToArgb());
             }
 
-        var indicesList = new List<int>();
+        // 260717Cl 変更: List+AddRange → サイズ確定済み配列への直接書き込み
+        var indexCount = (height - 1) * (width - 1) * 6;
+        Indices = new uint[indexCount];
+        var n = 0;
         for (int h = 0; h < height - 1; h++)
             for (int w = 0; w < width - 1; w++)
             {
-                int i = h * width + w;
-                indicesList.AddRange([i, i + 1, i + width + 1]);
-                indicesList.AddRange([i, i + width + 1, i + width,]);
+                var i = (uint)(h * width + w);
+                Indices[n++] = i; Indices[n++] = i + 1; Indices[n++] = i + (uint)width + 1;
+                Indices[n++] = i; Indices[n++] = i + (uint)width + 1; Indices[n++] = i + (uint)width;
             }
-        Vertices = [.. vList];
-        Indices = [.. indicesList.Select(i => (uint)i)];
-        Primitives = [(PT.Triangles, indicesList.Count)];
-
+        Primitives = [(PT.Triangles, indexCount)];
     }
 }
 
@@ -1832,14 +1757,11 @@ public class ColoredSurfaceMesh : GLObject
 {
     public ColoredSurfaceMesh(V3d[] positions, int[] argbs, uint[] indices, Material mat, DrawingMode mode = DrawingMode.Surfaces) : base(mat, mode)
     {
-        if (positions == null)
-            throw new ArgumentNullException(nameof(positions));
-        if (argbs == null)
-            throw new ArgumentNullException(nameof(argbs));
-        if (indices == null)
-            throw new ArgumentNullException(nameof(indices));
+        ArgumentNullException.ThrowIfNull(positions); // 260717Cl 変更: throw ヘルパーで簡潔に
+        ArgumentNullException.ThrowIfNull(argbs);
+        ArgumentNullException.ThrowIfNull(indices);
         if (positions.Length != argbs.Length)
-            throw new ArgumentException("positions and argbs must have the same length."); // (260321Ch)
+            throw new ArgumentException("positions and argbs must have the same length.");
 
         Vertices = GC.AllocateUninitializedArray<Vertex>(positions.Length);
         for (int i = 0; i < positions.Length; i++)
@@ -1853,7 +1775,7 @@ public class ColoredSurfaceMesh : GLObject
         Primitives = [(PT.Triangles, indices.Length)];
         UseFixedArgb = false; // (260321Ch) Material 固定色ではなく、各頂点の ARGB を使う
         CircumscribedSphereCenter = new V4d(0, 0, 0, 1);
-        CircumscribedSphereRadius = positions.Length == 0 ? 0 : positions.Max(p => p.Length);
+        CircumscribedSphereRadius = positions.Length == 0 ? 0 : Math.Sqrt(positions.Max(p => p.LengthSquared)); // 260717Cl 変更: sqrt を1回に
     }
 }
 #endregion
@@ -1862,10 +1784,8 @@ public class ColoredSurfaceMesh : GLObject
 /// <summary>文字オブジェクト</summary>
 public class TextObject : GLObject
 {
-    // private static readonly Dictionary<(int program, string Text, float FontSize, int Argb, bool WhiteEdge), (int TextureNum, Vertex[] Vertices)> dic = [];
     private static readonly Dictionary<(int ContextKey, int Program, string Text, float FontSize, int Argb, bool WhiteEdge), (int TextureNum, Vertex[] Vertices)> dic = []; // (260319Ch) GL context を跨ぐ text texture 再利用を防ぐ
 
-    // public static readonly Dictionary<(int Program, int TextureNum), (int VBO, int VAO, int EBO)> DefaultDictionaly = [];
     public static readonly Dictionary<(int ContextKey, int Program, int TextureNum), (int VBO, int VAO, int EBO)> DefaultDictionaly = []; // (260319Ch) text VAO/VBO cache も context ごとに分離
 
     private static readonly V2f p00 = new(0, 0), p01 = new(0, 1), p10 = new(1, 0), p11 = new(1, 1);
@@ -1882,17 +1802,10 @@ public class TextObject : GLObject
         if (contextKey == 0)
             return;
 
-        // var textureKeys = dic.Keys.Where(key => key.program == program).ToArray();
         var textureKeys = dic.Keys.Where(key => key.ContextKey == contextKey).ToArray(); // (260319Ch) control 切替時に stale text texture を持ち越さない
-        if (textureKeys.Length > 0)
-        {
-            // var textureIds = textureKeys.Select(key => dic[key].TextureNum).Distinct().ToArray();
-            // foreach (var textureId in textureIds)
-            //     GL.DeleteTexture(textureId);
-            // (260319Ch) context sharing 環境では他 control が同じ texture object を参照中の可能性があるため、ここでは dictionary だけ無効化する
-            foreach (var key in textureKeys)
-                dic.Remove(key);
-        }
+        // (260319Ch) context sharing 環境では他 control が同じ texture object を参照中の可能性があるため、texture object は削除せず dictionary だけ無効化する
+        foreach (var key in textureKeys)
+            dic.Remove(key);
 
         var vaoKeys = DefaultDictionaly.Keys.Where(key => key.ContextKey == contextKey).ToArray(); // (260319Ch) text VAO cache も同時にクリアする
         foreach (var key in vaoKeys)
@@ -1910,7 +1823,6 @@ public class TextObject : GLObject
         if (GLControlAlpha.DisableTextRendering || text==null) return;
         text = text.Trim();
 
-        // if (text != "" || fontSize > 0)
         if (text != "" && fontSize > 0) // (260319Ch) 空文字列ではテクスチャ生成に進まない
         {
             if (glControl != null)
@@ -1919,9 +1831,6 @@ public class TextObject : GLObject
                 if (program == -1)
                 {
                     glControl.MakeCurrent();
-                    // program = glControl.FragShader == GLControlAlpha.FragShaders.PPLL ?
-                    //     glControl.Program :
-                    //     glControl.TextProgram > 0 ? glControl.TextProgram : glControl.Program; // (260319Ch) PPLL text を linked-list に戻した案
                     program = glControl.TextProgram > 0 ? glControl.TextProgram : glControl.Program; // (260319Ch) PPLL text は専用 overlay program に戻す
                 }
             }
@@ -1943,90 +1852,75 @@ public class TextObject : GLObject
                 var strSize = TextRenderer.MeasureText(text, fnt, new Size(600, 100),
                     TextFormatFlags.Left); //文字列を描画するときの大体の大きさを計測する
 
-                var width = (ushort)strSize.Width;
-                var height = (ushort)strSize.Height;
+                var fullWidth = strSize.Width;
+                var fullHeight = strSize.Height;
 
-                using var bmp = new Bitmap(width, height);
+                using var bmp = new Bitmap(fullWidth, fullHeight);
                 using var g = Graphics.FromImage(bmp);//ImageオブジェクトのGraphicsオブジェクトを作成する
-                // g.Clear(Color.Transparent); // (260319Ch) 旧コードでは明示クリアしていなかった
                 g.Clear(Color.Transparent); // (260319Ch) PPLL overlay で背景 alpha が残らないよう bitmap を透明初期化する
                 g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAlias;
                 if (whiteEdge)
                 {
                     using var whiteBrush = new SolidBrush(Color.FromArgb(128, Color.White));
                     foreach (var (x, y) in whiteEdgeOffsets)
-                        g.DrawString(text, fnt, whiteBrush, new RectangleF(x, y, width, height));
+                        g.DrawString(text, fnt, whiteBrush, new RectangleF(x, y, fullWidth, fullHeight));
                 }
 
                 using var textBrush = new SolidBrush(Color.FromArgb(mat.Argb));
-                g.DrawString(text, fnt, textBrush, new RectangleF(1f, 1f, width, height));
+                g.DrawString(text, fnt, textBrush, new RectangleF(1f, 1f, fullWidth, fullHeight));
 
-                var argbList = new List<byte>(BitmapConverter.ToByteRGBA(bmp));// (260319Ch) データの並び順に注意
+                var argb = BitmapConverter.ToByteRGBA(bmp);// (260319Ch) データの並び順に注意
 
                 #region  余白の部分をトリムする
+                // 260717Cl 変更: List.RemoveRange の反復 (O(n²)) をやめ、不透明領域の境界 [top,bottom)×[left,right) を
+                // 先に確定してから矩形を一発コピーする (トリム結果は従来と同一)
+                var stride = fullWidth * 4;
+                int top = 0, bottom = fullHeight, left = 0, right = fullWidth;
+
                 bool isTransparentRow(int row)
                 {
-                    int rowOffset = row * width * 4;
-                    for (int x = 0; x < width; x++)
-                        if (argbList[rowOffset + x * 4 + 3] != 0)
+                    var rowOffset = row * stride;
+                    for (int x = 0; x < fullWidth; x++)
+                        if (argb[rowOffset + x * 4 + 3] != 0)
+                            return false;
+                    return true;
+                }
+                bool isTransparentColumn(int col)
+                {
+                    var colOffset = col * 4 + 3;
+                    for (int y = top; y < bottom; y++)
+                        if (argb[y * stride + colOffset] != 0)
                             return false;
                     return true;
                 }
 
-                bool isTransparentLeftColumn()
-                {
-                    int stride = width * 4;
-                    for (int y = 0; y < height; y++)
-                        if (argbList[y * stride + 3] != 0)
-                            return false;
-                    return true;
-                }
+                while (bottom > top && isTransparentRow(top)) top++;
+                while (bottom > top && isTransparentRow(bottom - 1)) bottom--;
+                while (right > left && isTransparentColumn(left)) left++;
+                while (right > left && isTransparentColumn(right - 1)) right--;
 
-                bool isTransparentRightColumn()
-                {
-                    int stride = width * 4;
-                    int alphaOffset = stride - 1;
-                    for (int y = 0; y < height; y++)
-                        if (argbList[y * stride + alphaOffset] != 0)
-                            return false;
-                    return true;
-                }
-
-                while (height > 0 && isTransparentRow(0))
-                {
-                    argbList.RemoveRange(0, width * 4);
-                    height--;
-                }
-                while (height > 0 && isTransparentRow(height - 1))
-                {
-                    argbList.RemoveRange((height - 1) * width * 4, width * 4);
-                    height--;
-                }
-
-                while (width > 0 && isTransparentLeftColumn())
-                {
-                    for (int h = height - 1; h >= 0; h--)
-                        argbList.RemoveRange(h * width * 4, 4);
-                    width--;
-                }
-                while (width > 0 && isTransparentRightColumn())
-                {
-                    for (int h = height; h > 0; h--)
-                        argbList.RemoveRange(h * width * 4 - 4, 4);
-                    width--;
-                }
-
+                var width = right - left;
+                var height = bottom - top;
                 if (width == 0 || height == 0)
                     return; // (260319Ch) 全透明テクスチャは GPU リソースを作らない
+
+                var trimmed = GC.AllocateUninitializedArray<byte>(width * height * 4);
+                for (int y = 0; y < height; y++)
+                    System.Buffer.BlockCopy(argb, (top + y) * stride + left * 4, trimmed, y * width * 4, width * 4); //System. は OpenTK の Buffer enum との衝突回避
                 #endregion
 
-                //空いてるテクスチャID番号を調べ、TextureNumberに格納 
+                //空いてるテクスチャID番号を調べ、TextureNumberに格納
                 TextureNum = GL.GenTexture();
                 // テクスチャをバインドする
                 GL.BindBuffer(BufferTarget.PixelUnpackBuffer, 0); // (260319Ch) PPLL 用 clearBuf が bind 済みでも text bitmap は CPU メモリから直接 upload する
                 GL.BindTexture(TextureTarget.Texture2D, TextureNum);
                 //テクスチャ用バッファに色情報を流し込む
-                GL.TexImage2D(TextureTarget.Texture2D, 0, PixelInternalFormat.Rgba, width, height, 0, PixelFormat.Rgba, PixelType.UnsignedByte, argbList.ToArray());
+                GL.TexImage2D(TextureTarget.Texture2D, 0, PixelInternalFormat.Rgba, width, height, 0, PixelFormat.Rgba, PixelType.UnsignedByte, trimmed);
+                // 260717Cl 移動: texture parameter は texture object の状態なので、描画毎ではなく生成時に1回だけ設定する
+                GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Nearest);
+                GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Nearest);
+                GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)TextureWrapMode.ClampToBorder);
+                GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)TextureWrapMode.ClampToBorder);
                 // テクスチャのアンバインド
                 GL.BindTexture(TextureTarget.Texture2D, 0);
 

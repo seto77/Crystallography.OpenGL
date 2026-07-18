@@ -55,7 +55,6 @@ public unsafe partial class GLControlAlpha : UserControl
     public static string VersionStr => $"{Version / 100}.{Version / 10 % 10}.{Version % 10}";
 
     /// <summary>Z-sortのために最低必要なOpenGLのバージョン (3桁整数, 410など)</summary>
-    //public static int VersionForZsort { get; } = 150;
     public static int VersionForZsort { get; } = 410; // (260319Ch) 共通描画パスの下限を OpenGL 4.1 core に引き上げる
     /// <summary>Z-sortのために最低必要なOpenGLのバージョン (文字列, 4.1.0など)</summary>
     public static string VersionForZsortStr => $"{VersionForZsort / 100}.{VersionForZsort / 10 % 10}.{VersionForZsort % 10}";
@@ -100,6 +99,9 @@ public unsafe partial class GLControlAlpha : UserControl
     private Clip Clip = null;
     private readonly List<GLObject> glObjects = [];
     private readonly GLObject quad = null;
+    // 260717Cl 追加: program ごとの fullscreen quad バッファ (毎フレーム再生成によるリーク防止)。
+    // control 破棄時は GL context ごと破棄されるため個別解放はしない (Dispose を実装する場合は全 entry の削除が必要)
+    private readonly Dictionary<int, (int VBO, int VAO, int EBO)> quadBuffers = [];
     private readonly Action renderAction;
     private bool renderingForBitmapCapture = false; // (260523Ch) GenerateBitmap 用の再描画では SwapBuffers せず back buffer を直接読む
     private readonly Dictionary<int, ProgramLocations> programLocations = []; // (260319Ch) ZSORT は mesh/text の 2 program を持てるようにする
@@ -229,14 +231,14 @@ public unsafe partial class GLControlAlpha : UserControl
     [Category("Rendering properties")]
     public PostAntiAliasingModes PostAntiAliasing
     {
-        get => postAntiAliasing;
+        get => field;
         set
         {
-            postAntiAliasing = value;
+            field = value;
             if (!DesignMode && Program != -1)
                 Render();
         }
-    }
+    } = PostAntiAliasingModes.None; // 260717Cl 変更: C#14 field キーワードで backing field を除去 (以下同様)
 
     #endregion
 
@@ -253,17 +255,14 @@ public unsafe partial class GLControlAlpha : UserControl
     [Category("Rendering properties")]
     public (bool Enabled, double Zfar, double Znear) DepthCueing
     {
-        get => depthCueing;
+        get => field;
         set
         {
-            depthCueing = value;
+            field = value;
             if (!DesignMode && Program != -1)
                 setDepthCueing();
         }
-    }
-
-    private (bool Enabled, double Zfar, double Znear) depthCueing = (false, -1.5, 0.5);
-    private PostAntiAliasingModes postAntiAliasing = PostAntiAliasingModes.None; // (260319Ch) PPLL/DDP の後段 FXAA 設定
+    } = (false, -1.5, 0.5);
 
     #endregion
 
@@ -305,17 +304,15 @@ public unsafe partial class GLControlAlpha : UserControl
     /// <summary>バックグラウンドカラー</summary>
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     [Category("Rendering properties")]
-    public Col4 BackgroundColor { get => backgroundColor; set { backgroundColor = value; Render(); } }
-    private Col4 backgroundColor = Col4.White;
+    public Col4 BackgroundColor { get => field; set { field = value; Render(); } } = Col4.White;
 
     #region Geometry関連
 
     /// <summary>光源(Light)の位置</summary>
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     [Category("Geometry")]
-    public Vec3d LightPosition { get => lightPosition; set { lightPosition = value; lightPositionF = value.ToV3f(); Render(); } }
+    public Vec3d LightPosition { get => field; set { field = value; lightPositionF = value.ToV3f(); Render(); } } = new(10, 10, 10);
 
-    private Vec3d lightPosition = new(10, 10, 10);
     private Vec3f lightPositionF = new(10, 10, 10);
 
     /// <summary>回転中心座標 (ワールド回転および光源に対して共通)</summary>
@@ -373,23 +370,18 @@ public unsafe partial class GLControlAlpha : UserControl
     /// <summary>カメラのターゲット</summary>
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     [Category("Geometry")]
-    public Vec3d ViewTo { get => viewTo; set { viewTo = value; setViewMatrix(); } }
-
-    private Vec3d viewTo = new(0, 0, 0);
+    public Vec3d ViewTo { get => field; set { field = value; setViewMatrix(); } } = new(0, 0, 0);
 
     /// <summary>カメラの上方向</summary>
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     [Category("Geometry")]
-    public Vec3d ViewUp { get => viewUp; set { viewUp = value; setViewMatrix(); } }
-
-    private Vec3d viewUp = new(0, 1, 0);
+    public Vec3d ViewUp { get => field; set { field = value; setViewMatrix(); } } = new(0, 1, 0);
 
     /// <summary>カメラ(ビュー)マトリックス</summary>
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     [Category("Geometry")]
-    public Mat4d ViewMatrix { get => viewMatrix; set { viewMatrix = value; viewMatrixF = value.ToM4f(); Render(); } }
+    public Mat4d ViewMatrix { get => field; set { field = value; viewMatrixF = value.ToM4f(); Render(); } } = Mat4d.Identity;
 
-    private Mat4d viewMatrix = Mat4d.Identity;
     private Mat4f viewMatrixF = Mat4f.Identity;
 
     private void setViewMatrix() => ViewMatrix = Mat4d.LookAt(ViewFrom, ViewTo, ViewUp);
@@ -404,7 +396,6 @@ public unsafe partial class GLControlAlpha : UserControl
     /// <summary>投影面の横の長さ(GL空間での単位)</summary>
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)] //260405Cl 追加
     [Category("Geometry")]
-    //public double ProjWidth { get => projWidth; set { projWidth = value; setProjMatrix(); } } // 260703Cl 変更前
     public double ProjWidth { get => projWidth; set { projWidth = value; setProjMatrix(); ProjWidthChanged?.Invoke(this, EventArgs.Empty); } } // 260703Cl ズーム操作(右ドラッグ/ホイール)・直接set のどちらでもイベント発生
 
     private double projWidth = 4f;
@@ -511,9 +502,8 @@ public unsafe partial class GLControlAlpha : UserControl
     /// <summary>プロジェクション(投影)マトリックス</summary>
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     [Category("Geometry")]
-    public Mat4d ProjMatrix { get => projMatrix; set { projMatrix = value; projMatrixF = value.ToM4f(); Render(); } }
+    public Mat4d ProjMatrix { get => field; set { field = value; projMatrixF = value.ToM4f(); Render(); } } = Mat4d.Identity;
 
-    private Mat4d projMatrix = Mat4d.Identity;
     private Mat4f projMatrixF = Mat4f.Identity;
     private void setProjMatrix()
     {
@@ -539,7 +529,6 @@ public unsafe partial class GLControlAlpha : UserControl
     #region ロード関連
     /// <summary>//バージョンチェック。メモリの例外（通常のCatchでは捉えられない）を吐くので別メソッドにした。</summary>
     /// <returns></returns>
-    //[HandleProcessCorruptedStateExceptions] //260317Cl 削除 SYSLIB0032: .NET Core以降では無視される属性
     private static string[] CheckVersion()
     {
         try
@@ -559,7 +548,6 @@ public unsafe partial class GLControlAlpha : UserControl
                 _ => ver,
             }; // (260320Ch) 長さごとの補完を switch 式で簡潔にまとめる
         }
-        // catch { throw new Exception(); }
         catch { return null; } // (260320Ch) probe 失敗は呼び出し元のフォールバックに委ねる
     }
 
@@ -617,7 +605,6 @@ public unsafe partial class GLControlAlpha : UserControl
     /// <summary>GLControlのGraphicsを得る。メモリの例外（通常のCatchでは捉えられない）を吐くので別メソッドにした。</summary>
     /// <param name="control"></param>
     /// <returns></returns>
-    //[HandleProcessCorruptedStateExceptions] //260317Cl 削除 SYSLIB0032: .NET Core以降では無視される属性
     private static Graphics getGraphics(GLControl control)
     {
         try { return control.CreateGraphics(); }
@@ -658,12 +645,7 @@ public unsafe partial class GLControlAlpha : UserControl
             Debug.WriteLine($"GLControlAlpha: WMI Win32_VideoController query failed: {e.Message}");
         }
 
-        //if(GraphicsInfo.Count>1 && GraphicsInfo[0].Product.Contains("Radeon"))
-        //    DisableTextRendering = true;
 
-        //using var glcontrol = new GLControl();
-        //glcontrol.MakeCurrent();
-        //var ver = CheckVersion();
         try // 260420Cl 追加 OpenGL コンテキスト生成/シェーダ検査中の例外もフォールバック処理へ倒す
         {
             Version = checkSupportedVersion(FragShaders.PPLL, FragShaders.ZSORT); // (260319Ch) まず 4.3、次に 4.1 を試して実際に使える上限を判定
@@ -708,7 +690,6 @@ public unsafe partial class GLControlAlpha : UserControl
         renderAction = Render; // (260319Ch) Invoke 用 delegate を使い回して描画要求時の小さな確保を避ける
         CacheKey = System.Threading.Interlocked.Increment(ref CacheKeySeed); // (260319Ch) control ごとに一意の cache key を振る
 
-        //if (DisablingOpenGL || DesignMode || !ZsortEnabled)
         if (DisablingOpenGL || DesignMode || !ZsortEnabled)
             return;
 
@@ -722,13 +703,6 @@ public unsafe partial class GLControlAlpha : UserControl
         #region glControlの初期化
         SuspendLayout();
         // glControlのコンストラクタで、GraphicsModeを指定する必要があるが、これをするとデザイナが壊れるので、ここに書く。
-        //var setting = new GLControlSettings()
-        //{
-        //    NumberOfSamples = FragShader == FragShaders.ZSORT ? 2 : 0,
-        //    StencilBits = 8,
-        //    DepthBits = 16,
-        //    Profile = OpenTK.Windowing.Common.ContextProfile.Core,
-        //};
         var setting = createGlControlSettings(FragShader); // (260319Ch) shader 要件に応じて 4.1 / 4.3 core context を明示要求する
 
         glControl = new GLControl(setting)
@@ -764,14 +738,9 @@ public unsafe partial class GLControlAlpha : UserControl
             Properties.Resources.fragDDP : // (260319Ch) DDP は fragDDP.c を使う
             Properties.Resources.fragPPLL.Replace("MAX_FRAGMENTS ##", $"MAX_FRAGMENTS {MaxFragments}");
 
-        // var textProgram = Program; // (260319Ch) 旧来は text も mesh と同じ program/subroutine で処理していた
         Program = CreateShader(Properties.Resources.vert, Properties.Resources.geom, frag);
-        // if (FragShader == FragShaders.ZSORT)
-        //     TextProgram = CreateShader(Properties.Resources.vertText, Properties.Resources.geom, Properties.Resources.fragZSORTText);
-        // TextProgram = CreateShader(Properties.Resources.vertText, Properties.Resources.geom, Properties.Resources.fragZSORTText); // (260319Ch) 旧案: PPLL でも ZSORT 用 text shader を共用していた
         var textFrag = FragShader == FragShaders.PPLL ? Properties.Resources.fragPPLLText : Properties.Resources.fragZSORTText;
         TextProgram = CreateShader(Properties.Resources.vertText, Properties.Resources.geom, textFrag); // (260319Ch) PPLL text は alpha-only shader に分けて黒四角を避ける
-        // PostProcessProgram = Program; // (260319Ch) 旧案: 後段 AA なしで main program の出力をそのまま表示する
         if (FragShader != FragShaders.ZSORT)
             PostProcessProgram = CreateShader(Properties.Resources.vert, Properties.Resources.geom, Properties.Resources.fragFXAA); // (260319Ch) PPLL/DDP は最後に FXAA を掛けられるようにする
 
@@ -792,15 +761,13 @@ public unsafe partial class GLControlAlpha : UserControl
 
             GL.Disable(EnableCap.DepthTest);//PPLLモードの時、 DepthTest無効、
 
-            // passPpll1Index = GL.GetProgramResourceIndex(Program, ProgramInterface.FragmentSubroutine, "passPPLL1");
-            // passPpll2Index = GL.GetProgramResourceIndex(Program, ProgramInterface.FragmentSubroutine, "passPPLL2");
             passPpll1Index = GL.GetSubroutineIndex(Program, ShaderType.FragmentShader, "passPPLL1"); // (260319Ch) UniformSubroutines には subroutine index を渡す
             passPpll2Index = GL.GetSubroutineIndex(Program, ShaderType.FragmentShader, "passPPLL2"); // (260319Ch) resource index ではなく API 対応の index を使う
             passNormalIndex = GL.GetSubroutineIndex(Program, ShaderType.FragmentShader, "passNormal"); // (260319Ch) text overlay 用の通常描画 path
             passPpllTextIndex = GL.GetSubroutineIndex(Program, ShaderType.FragmentShader, "passLabelOverlay"); // (260319Ch) text pixel ごとに linked-list を再合成する PPLL 専用 path
 
             quad = new Quads(new Vec3d(-1, -1, 1), new Vec3d(1, -1, 1), new Vec3d(1, 1, 1), new Vec3d(-1, 1, 1), new Material(0), DrawingMode.Surfaces);
-            quad.Generate(Program, CacheKey); // (260319Ch) fullscreen quad も control ごとの context key で生成する
+            ensureQuadBuffers(Program); // (260319Ch) fullscreen quad も control ごとの context key で生成する
         }
         else if (FragShader == FragShaders.DDP)
         {
@@ -815,12 +782,10 @@ public unsafe partial class GLControlAlpha : UserControl
             passDdpCompositeIndex = GL.GetSubroutineIndex(Program, ShaderType.FragmentShader, "passDdpComposite");
 
             quad = new Quads(new Vec3d(-1, -1, 1), new Vec3d(1, -1, 1), new Vec3d(1, 1, 1), new Vec3d(-1, 1, 1), new Material(0), DrawingMode.Surfaces);
-            quad.Generate(Program, CacheKey); // (260319Ch) DDP final composite でも fullscreen quad を使う
+            ensureQuadBuffers(Program); // (260319Ch) DDP final composite でも fullscreen quad を使う
         }
         else
         {//Zsortモードの時、DepthTest有効
-         //GL.Enable(EnableCap.CullFace);
-         //GL.CullFace(CullFaceMode.Back);
             GL.Enable(EnableCap.DepthTest);
             GL.DepthMask(true);
 
@@ -1020,7 +985,6 @@ public unsafe partial class GLControlAlpha : UserControl
             OpenTK.GLControl.GLDebugLog.Log(this.Name, "ppTexRecreate",
                 $"[inner={glControl.Name}] {postProcessTextureWidth}x{postProcessTextureHeight} -> {width}x{height}");
 
-        // GL.TexImage2D(TextureTarget.Texture2D, 0, PixelInternalFormat.Rgba8, MaxWidth, MaxHeight, 0, PixelFormat.Rgba, PixelType.UnsignedByte, IntPtr.Zero);
         // (260319Ch) 旧案: MaxWidth/MaxHeight 固定 texture に部分コピーしていたため、最終表示で左下に縮んで見えた
         GL.BindTexture(TextureTarget.Texture2D, postProcessColorTex);
         GL.TexImage2D(TextureTarget.Texture2D, 0, PixelInternalFormat.Rgba8, width, height, 0, PixelFormat.Rgba, PixelType.UnsignedByte, IntPtr.Zero); // (260319Ch) FXAA texture tracks the actual viewport size so UV=0..1 maps to the copied scene
@@ -1035,7 +999,6 @@ public unsafe partial class GLControlAlpha : UserControl
 
     private bool shouldApplyPostAntiAliasing()
     {
-        // return PostAntiAliasing != PostAntiAliasingModes.None; // (260319Ch) 旧案: mode だけで unconditional に有効化する
         return PostAntiAliasing == PostAntiAliasingModes.FXAA
             && PostProcessProgram > 0
             && postProcessColorTex != 0
@@ -1128,8 +1091,6 @@ public unsafe partial class GLControlAlpha : UserControl
 
     private int getProgramForObject(GLObject obj)
     {
-        // if (TextProgram > 0 && obj is TextObject && FragShader != FragShaders.PPLL)
-        // if (TextProgram > 0 && obj is TextObject)
         if (TextProgram > 0 && obj is TextObject && FragShader != FragShaders.PPLL)
             return TextProgram;
         // (260319Ch) text は専用 program を維持するが、PPLL だけは main program の linked-list を読んで半透明遮蔽込みで再合成する
@@ -1178,13 +1139,11 @@ public unsafe partial class GLControlAlpha : UserControl
         GL.BindBufferBase(BufferRangeTarget.ShaderStorageBuffer, 0, buffers[LinkedListBuffer]);
         GL.BufferData(BufferTarget.ShaderStorageBuffer, (int)(maxNodes * nodeSize), IntPtr.Zero, BufferUsageHint.DynamicDraw);
         GL.Uniform1(GL.GetUniformLocation(Program, "MaxNodes"), maxNodes);
-        // var headPtrClearBuf = Enumerable.Repeat(0xffffffff, MaxWidth * MaxHeight).ToArray();
         var headPtrClearBuf = GC.AllocateUninitializedArray<uint>(MaxWidth * MaxHeight); // (260320Ch) uint[] を直接確保して余計な変換を避ける
         Array.Fill(headPtrClearBuf, uint.MaxValue); // (260320Ch) head pointer のクリア値 0xFFFFFFFF をまとめて初期化する
         GL.GenBuffers(1, out clearBuf);
         GL.BindBuffer(BufferTarget.PixelUnpackBuffer, clearBuf);
         GL.BufferData(BufferTarget.PixelUnpackBuffer, headPtrClearBuf.Length * sizeof(uint), headPtrClearBuf, BufferUsageHint.StaticDraw);
-        // GL.BindBuffer(BufferTarget.PixelUnpackBuffer, clearBuf);
         GL.BindBuffer(BufferTarget.PixelUnpackBuffer, 0); // (260319Ch) 初回 PPLL 切替前の text texture upload が PBO 経由に化けないよう unbind しておく
         GL.BindTexture(TextureTarget.Texture2D, 0); // (260319Ch) PPLL の補助 texture bind を通常描画へ持ち越さない
     }
@@ -1273,6 +1232,29 @@ public unsafe partial class GLControlAlpha : UserControl
         GL.BlendFuncSeparate(2, BlendingFactorSrc.SrcAlpha, BlendingFactorDest.OneMinusSrcAlpha, BlendingFactorSrc.Zero, BlendingFactorDest.One); // (260319Ch) Back accumulation uses regular over blending while alpha stays opaque
     }
 
+    /// <summary>
+    /// 260717Cl 追加: fullscreen quad の GPU バッファを program ごとに一度だけ生成して使い回す。
+    /// 従来は描画のたびに Generate() が新しい VBO/VAO/EBO を生成しており、PPLL/DDP/FXAA で毎フレーム
+    /// GPU リソースがリークしていた。program ごとに VAO を分けるのは、PPLL main program と FXAA program で
+    /// attribute location が異なり得るため。
+    /// </summary>
+    private void ensureQuadBuffers(int program)
+    {
+        if (quad == null)
+            return;
+        if (quadBuffers.TryGetValue(program, out var buffers))
+        {
+            quad.Obj = buffers;
+            quad.Program = program;
+            quad.ContextKey = CacheKey;
+        }
+        else
+        {
+            quad.Generate(program, CacheKey);
+            quadBuffers[program] = quad.Obj;
+        }
+    }
+
     private void renderFullscreenQuad(int program)
     {
         if (program < 1 || quad == null || !programLocations.TryGetValue(program, out var locations))
@@ -1282,7 +1264,7 @@ public unsafe partial class GLControlAlpha : UserControl
         GL.UniformMatrix4(locations.ViewMatrix, false, ref m4id);
         GL.UniformMatrix4(locations.ProjMatrix, false, ref m4id);
         GL.UniformMatrix4(locations.WorldMatrix, false, ref m4id);
-        quad.Generate(program, CacheKey); // (260319Ch) fullscreen quad は念のため毎回 current context に揃え直す
+        ensureQuadBuffers(program); // 260717Cl 変更: 毎フレームの再 Generate をやめ、生成済みバッファへ切り替える
         quad.Render(null);
     }
     #endregion Shader Storage の初期化
@@ -1303,8 +1285,6 @@ public unsafe partial class GLControlAlpha : UserControl
     {
         if (Program < 1) return;
         glControl.MakeCurrent();
-        // GLObject.Generate(Program, objs);
-        // glObjects.AddRange(objs);
         var bufferedObjects = objs as IList<GLObject> ?? objs.ToList(); // (260319Ch) 遅延列挙の二重走査を避ける
         if (bufferedObjects.Count == 0)
             return;
@@ -1405,7 +1385,6 @@ public unsafe partial class GLControlAlpha : UserControl
 
         if (InvokeRequired)//別スレッドから呼び出されたとき Invokeして呼びなおす
         {
-            // Invoke(new Action(() => Render()), null);
             Invoke(renderAction); // (260319Ch) 毎回ラムダを作らず既存 delegate を再利用
             return;
         }
@@ -1440,7 +1419,6 @@ public unsafe partial class GLControlAlpha : UserControl
                 return;
             GL.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
             GL.ClearColor(BackgroundColor);
-            // glControl.SwapBuffers();//swap // 旧実装: Bitmap 生成用の再描画でも常に front/back を入れ替えていた
             if (!renderingForBitmapCapture)
                 glControl.SwapBuffers();//swap // (260523Ch) キャプチャ用描画は back buffer を保持して ReadPixels する
             return;
@@ -1468,10 +1446,6 @@ public unsafe partial class GLControlAlpha : UserControl
 
         if (FragShader == FragShaders.PPLL)//PPLLモードの時
         {
-            // GLObject.CurrentFragmentRenderPassIndex = passNormalIndex; // (260319Ch) PPLL text を linked-list に戻した案
-            // GL.UniformSubroutines(ShaderType.FragmentShader, 1, ref passNormalIndex);
-            // GL.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
-            // renderObjects(); // (260319Ch) 旧案: text も PPLL の linked-list に積んで z-order を保つ
             // (260319Ch) 現案: text は linked-list 生成後に各 glyph pixel だけ scene を再合成して置き換える
             GL.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
             GL.ColorMask(true, true, true, true);
@@ -1488,7 +1462,6 @@ public unsafe partial class GLControlAlpha : UserControl
             var (hpRtW, hpRtH) = getRenderTargetPixels();
             var headPointerWidth = Math.Min(hpRtW, MaxWidth);
             var headPointerHeight = Math.Min(hpRtH, MaxHeight);
-            // GL.TexSubImage2D(TextureTarget.Texture2D, 0, 0, 0, MaxWidth, MaxHeight, PixelFormat.RedInteger, PixelType.UnsignedInt, IntPtr.Zero);
             if (headPointerWidth > 0 && headPointerHeight > 0)
                 GL.TexSubImage2D(TextureTarget.Texture2D, 0, 0, 0, headPointerWidth, headPointerHeight, PixelFormat.RedInteger, PixelType.UnsignedInt, IntPtr.Zero); // (260319Ch) Clear only the active viewport region of the head-pointer texture
 
@@ -1502,7 +1475,6 @@ public unsafe partial class GLControlAlpha : UserControl
             renderObjects(includeTextObjects: false, includeNonTextObjects: true); // (260319Ch) text は linked-list から外し、後段 overlay で描く
 
             //pass2();
-            // GL.MemoryBarrier(MemoryBarrierFlags.ShaderStorageBarrierBit);
             GL.MemoryBarrier(
                 MemoryBarrierFlags.ShaderStorageBarrierBit |
                 MemoryBarrierFlags.ShaderImageAccessBarrierBit |
@@ -1514,12 +1486,14 @@ public unsafe partial class GLControlAlpha : UserControl
             GL.UniformMatrix4(locations.ViewMatrix, false, ref m4id);
             GL.UniformMatrix4(locations.ProjMatrix, false, ref m4id);
             GL.UniformMatrix4(locations.WorldMatrix, false, ref m4id);
-            quad?.Generate(Program, CacheKey);//理由はよく分からんが、Generateしておかないと、うまく描画できないことが多い
+            // 260717Cl 変更: 従来はここで毎フレーム quad.Generate() しており、VBO/VAO/EBO が毎フレームリークしていた。
+            // 当時の「Generateしておかないと、うまく描画できない」という観察の原因は未確定だが (location cache が
+            // context 非対応だった頃の VAO 混線が疑わしい)、program 別の生成済みバッファへ切り替える方式で再発を防ぐ。
+            ensureQuadBuffers(Program);
             quad?.Render(null);// Draw a screen filler
 
             if (hasRenderableTextObject())
             {
-                // applyFrameUniforms(TextProgram); // (260319Ch) 旧案: text は depth prepass 後に専用 shader で重ねる
                 applyFrameUniforms(Program); // (260319Ch) main PPLL program で glyph pixel ごとに linked-list を再合成する
                 GLObject.CurrentFragmentRenderPassIndex = passPpllTextIndex;
                 GLObject.CurrentDepthTestEnabled = false;
@@ -1588,15 +1562,12 @@ public unsafe partial class GLControlAlpha : UserControl
                 GL.DepthMask(false);
                 enableDdpBlendState();
 
-                // GL.BeginQuery(QueryTarget.AnySamplesPassed, ddpQuery);
                 if (DualDepthPeelingUseOcclusionQuery)
                     GL.BeginQuery(QueryTarget.AnySamplesPassed, ddpQuery); // (260319Ch) 開発用: 空 pass で早期終了したい場合だけ query を使う
                 renderObjects(includeTextObjects: false, includeNonTextObjects: true);
-                // GL.EndQuery(QueryTarget.AnySamplesPassed);
                 if (DualDepthPeelingUseOcclusionQuery)
                     GL.EndQuery(QueryTarget.AnySamplesPassed);
 
-                // GL.GetQueryObject(ddpQuery, GetQueryObjectParam.QueryResult, out int passHasSamples);
                 if (DualDepthPeelingUseOcclusionQuery)
                 {
                     GL.GetQueryObject(ddpQuery, GetQueryObjectParam.QueryResult, out int passHasSamples);
@@ -1652,16 +1623,12 @@ public unsafe partial class GLControlAlpha : UserControl
                 updateTransparentOrder();
             renderObjects();// draw scene
         }
-        // glControl.SwapBuffers(); // (260319Ch) 旧案: final image をそのまま back buffer から表示する
         if (shouldApplyPostAntiAliasing())
             resolvePostAntiAliasing(); // (260319Ch) PPLL/DDP は最終画像へ 1 回だけ FXAA を掛けてジャギーを和らげる
-        // glControl.SwapBuffers(); // 旧実装: Bitmap 生成用の再描画でも常に front/back を入れ替えていた
         if (!renderingForBitmapCapture)
             glControl.SwapBuffers(); // (260523Ch) GenerateBitmap(renderBeforeRead: true) では back buffer の最終画像を直接読む
-        // GL.Finish();
         // (260319Ch) 毎フレームの強制 GPU 完了待ちは CPU/GPU を直列化してしまうので通常描画では行わない
         
-        // Paint?.Invoke(this, new PaintEventArgs(glControlGraphics, glControl.ClientRectangle)); // 旧実装: Render 完了時は常に外部 Paint を通知していた
         if (!renderingForBitmapCapture)
             Paint?.Invoke(this, new PaintEventArgs(glControlGraphics, glControl.ClientRectangle)); // (260523Ch) キャプチャ専用再描画では副作用を抑える
     }
@@ -1703,7 +1670,6 @@ public unsafe partial class GLControlAlpha : UserControl
             if (!obj.Rendered || obj is TextObject)
                 continue;
 
-            // if (obj.Material.Color.A >= 0.999f)
             if (obj is Sphere || obj.Material.Color.A >= 0.999f) // (260319Ch) ラベル遮蔽用 prepass では前面の原子球を透明でも必ず深度へ入れる
                 obj.Render(Clip); // (260319Ch) 半透明 sphere が前面にあるときも背面ラベルを隠せるようにする
         }
@@ -1787,7 +1753,6 @@ public unsafe partial class GLControlAlpha : UserControl
             var shiftX = (float)(ProjWidth / glControl.ClientSize.Width * dx);
             var shiftY = (float)(ProjWidth / glControl.ClientSize.Width * dy);
             ProjCenter = new Vec2d(projCenter.X - shiftX, projCenter.Y - shiftY);
-            //setProjMatrix();
         }
         else if (e.Button == MouseButtons.Right && AllowMouseScaling)
         {
@@ -1897,7 +1862,6 @@ public unsafe partial class GLControlAlpha : UserControl
         if (width <= 0 || height <= 0)
             return null;
 
-        // var bmp = new Bitmap(glControl.ClientSize.Width, glControl.Height); // 旧実装: 現在のバッファをそのまま読む
         var bmp = new Bitmap(width, height); // (260523Ch) capture 用再描画後の back buffer サイズと合わせる
         var data = bmp.LockBits(Rectangle.FromLTRB(0, 0, bmp.Width, bmp.Height), System.Drawing.Imaging.ImageLockMode.WriteOnly, System.Drawing.Imaging.PixelFormat.Format24bppRgb);
         GL.ReadBuffer(ReadBufferMode.Back); // (260523Ch) Render(swapなし) の出力先である back buffer を明示して読む
@@ -1916,7 +1880,6 @@ public unsafe partial class GLControlAlpha : UserControl
         applyDepthCueing(Program);
         if (TextProgram > 0)
             applyDepthCueing(TextProgram);
-        // GL.Finish();
         // (260319Ch) uniform 更新直後に Render() するだけなので、ここで同期完了待ちを入れる必要はない
         Render();
     }
