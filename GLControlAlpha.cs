@@ -429,7 +429,7 @@ public unsafe partial class GLControlAlpha : UserControl
     private int _renderLogCount2 = 0; // 260529Cl 追加: Render が早期 return を通過した後の初期数回のログ用カウンタ
     private int _viewportLogCount = 0; // 260529Cl 追加: GL.Viewport 設定直後の readback ログ用カウンタ
 
-    // 260529Cl: 診断モード (環境変数 RECIPRO_GLDIAG)。未設定=通常 (ログ無し)。詳細: .project-guidance/ReciPro_WindowsOnARM_OpenGL調査.md
+    // 260529Cl: 診断モード (環境変数 RECIPRO_GLDIAG)。未設定=通常 (ログ無し)。詳細: .project-guidance/ReciPro/ReciPro_WindowsOnARM_OpenGL.md
     //   RECIPRO_GLDIAG=1     → 実描画のまま診断ログを出力 (GL_RENDERER / Viewport readback 等)
     //   RECIPRO_GLDIAG=bands → 上記ログ + 通常描画を BLUE/MAGENTA/RED カラーバンドに置換 (swapchain 実サイズの可視化)
     private static readonly bool _glLog = OpenTK.GLControl.GLDebugLog.Enabled; // ログ全般のゲート (文字列生成も抑止する用)
@@ -442,7 +442,7 @@ public unsafe partial class GLControlAlpha : UserControl
     // ResizeBuffers が効かずサイズが固定化する。空描画 (描画対象が無い) の間は FB0 を触らず、swapchain の最初の生成を
     // 最初の実コンテンツ描画 (= 最終サイズ) まで遅延させることで、正しいサイズで生成させる。実コンテンツ描画後は
     // swapchain が確保済みなので通常どおり空描画もクリアする。ARM 以外は従来挙動 (影響なし)。
-    // 詳細: .project-guidance/ReciPro_WindowsOnARM_OpenGL調査.md
+    // 詳細: .project-guidance/ReciPro/ReciPro_WindowsOnARM_OpenGL.md
     private static readonly bool _isArm64 =
         System.Runtime.InteropServices.RuntimeInformation.OSArchitecture == System.Runtime.InteropServices.Architecture.Arm64;
     private bool _hasRenderedContent = false; // 実コンテンツを1回でも描画したか (ARM の swapchain 遅延生成解除用)
