@@ -690,6 +690,11 @@ public unsafe partial class GLControlAlpha : UserControl
         renderAction = Render; // (260319Ch) Invoke 用 delegate を使い回して描画要求時の小さな確保を避ける
         CacheKey = System.Threading.Interlocked.Increment(ref CacheKeySeed); // (260319Ch) control ごとに一意の cache key を振る
 
+        // 260731Cl 追加: ダークモード時は既定の背景色をフォーム背景に合わせる。Application.SetColorMode(Dark) 有効時、
+        // System.Drawing.SystemColors はダーク値へ再マップされる (Control = #202020)。ライトモードでは従来どおり White。
+        if (Application.IsDarkModeEnabled)
+            BackgroundColor = SystemColors.Control;
+
         if (DisablingOpenGL || DesignMode || !ZsortEnabled)
             return;
 
@@ -707,7 +712,8 @@ public unsafe partial class GLControlAlpha : UserControl
 
         glControl = new GLControl(setting)
         {
-            BackColor = Color.White,
+            //BackColor = Color.White,
+            BackColor = Application.IsDarkModeEnabled ? SystemColors.Control : Color.White, // 260731Cl 変更: ダークモード追随 (初回描画前の WinForms 背景も一致させる)
             Name = $"glControl{N}",
             Text = $"glControl{N++}",
             Dock = DockStyle.Fill,
