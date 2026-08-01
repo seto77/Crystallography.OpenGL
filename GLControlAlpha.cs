@@ -1790,6 +1790,9 @@ public unsafe partial class GLControlAlpha : UserControl
     {
         MouseDown?.Invoke(this, e);
 
+        if (e.Button == MouseButtons.Right) //260801Cl 追加: 右クリック 3 回判定のためのドラッグ量測定用
+            rightMouseDownPoint = e.Location;
+
         //右ダブルクリックは、Orthographic <=> Perspective の切り替え
         if (e.Clicks == 2 && e.Button == MouseButtons.Right && (ModifierKeys & Keys.Control) == Keys.Control)
             ProjectionMode = ProjectionMode == ProjectionModes.Orhographic ? ProjectionModes.Perspective : ProjectionModes.Orhographic;
@@ -1798,7 +1801,45 @@ public unsafe partial class GLControlAlpha : UserControl
     private void glControl_MouseUp(object sender, MouseEventArgs e)
     {
         MouseUp?.Invoke(sender, e);
+
+        if (e.Button == MouseButtons.Right) //260801Cl 追加
+            showContextMenuIfTripleRightClick(e);
     }
+
+    #region 260801Cl 追加: 右クリック 3 回でコンテキストメニューを出す隠し機能 (デバッグ用途。マニュアルには載せない)
+    //contextMenuStrip は 2020 年の GLControlAlpha 新設時から Designer に定義され 11 言語ローカライズもされているが、
+    //ContextMenuStrip プロパティへの代入も Show() の呼び出しも無く、一度も表示されたことがなかった。
+    //単純に ContextMenuStrip へ割り当てると、WinForms は右ボタンを離した時点で WM_CONTEXTMENU を出すため、
+    //右ドラッグ = ズーム (glControl_MouseMove の AllowMouseScaling 分岐) を終えるたびにメニューが開いて実用に耐えない。
+    //そこで「ドラッグを伴わない右クリックが規定時間内に 3 回続いたとき」だけ自前で表示する。
+    //各メニュー項目のハンドラは未実装 (項目は表示されるが機能しない) — 実装は後回しにする方針 (作者判断)。
+    private long lastRightClickTick;   //直前の右クリック時刻
+    private int rightClickCount;       //連続した右クリックの回数
+    private Point rightMouseDownPoint; //右ボタン押下位置 (ドラッグ判定用)
+
+    private void showContextMenuIfTripleRightClick(MouseEventArgs e)
+    {
+        //ズーム目的の右ドラッグや、Ctrl+右ダブルクリック (投影切替) は数えない
+        var drag = SystemInformation.DragSize;
+        if (ModifierKeys != Keys.None
+            || Math.Abs(e.X - rightMouseDownPoint.X) > drag.Width
+            || Math.Abs(e.Y - rightMouseDownPoint.Y) > drag.Height)
+        {
+            rightClickCount = 0;
+            return;
+        }
+
+        var tick = Environment.TickCount64;
+        rightClickCount = tick - lastRightClickTick <= SystemInformation.DoubleClickTime ? rightClickCount + 1 : 1;
+        lastRightClickTick = tick;
+
+        if (rightClickCount >= 3)
+        {
+            rightClickCount = 0;
+            contextMenuStrip.Show(glControl, e.Location);
+        }
+    }
+    #endregion
 
     #endregion
 
