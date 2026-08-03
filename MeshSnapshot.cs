@@ -60,6 +60,9 @@ public sealed class MeshSnapshot
     /// <summary>Kind が Cylinder/Cone/Pipe の場合の始点側・終点側の半径</summary>
     public double PipeRadius1, PipeRadius2;
 
+    /// <summary>Kind が Lines の場合の線分列 (ワールド座標)。円柱化エクスポートなどに使う (260803Cl 追加)</summary>
+    public (V3d Start, V3d End)[] Segments = [];
+
     /// <summary>
     /// GLObject から表示メッシュのスナップショットを生成する。
     /// 三角形系プリミティブ (Triangles/TriangleStrip/TriangleFan) のみを展開し、線・点は含めない。
@@ -98,6 +101,48 @@ public sealed class MeshSnapshot
 
         if (snap.Kind == SnapshotKind.Text || o.Vertices is not { Length: > 0 } || o.Indices is not { Length: > 0 } || o.Primitives == null)
             return snap;
+
+        //260803Cl 追加 (Phase 1): 線オブジェクト (単位胞枠など) は三角形を持たないので、代わりに線分列を抽出する
+        if (snap.Kind == SnapshotKind.Lines)
+        {
+            var mL = o.ObjectMatrix;
+            V3d s0 = new(mL.Row0.X, mL.Row0.Y, mL.Row0.Z), s1 = new(mL.Row1.X, mL.Row1.Y, mL.Row1.Z),
+                s2 = new(mL.Row2.X, mL.Row2.Y, mL.Row2.Z), s3 = new(mL.Row3.X, mL.Row3.Y, mL.Row3.Z);
+            V3d pos(int i)
+            {
+                var p = o.Vertices[o.Indices[i]].Position;
+                return p.X * s0 + p.Y * s1 + p.Z * s2 + s3;
+            }
+            var segs = new System.Collections.Generic.List<(V3d Start, V3d End)>();
+            void addSeg(int i, int j)
+            {
+                var (a, b) = (pos(i), pos(j));
+                if ((b - a).LengthSquared > 1E-20)//零長は捨てる
+                    segs.Add((a, b));
+            }
+            var ofs = 0;
+            foreach (var (type, count) in o.Primitives)
+            {
+                if (ofs + count > o.Indices.Length)
+                    break;
+                switch (type)
+                {
+                    case PT.Lines:
+                        for (int i = 0; i + 1 < count; i += 2) addSeg(ofs + i, ofs + i + 1);
+                        break;
+                    case PT.LineStrip:
+                        for (int i = 1; i < count; i++) addSeg(ofs + i - 1, ofs + i);
+                        break;
+                    case PT.LineLoop:
+                        for (int i = 1; i < count; i++) addSeg(ofs + i - 1, ofs + i);
+                        if (count > 2) addSeg(ofs + count - 1, ofs);
+                        break;
+                }
+                ofs += count;
+            }
+            snap.Segments = [.. segs];
+            return snap;
+        }
 
         //三角形数を先に数えて一括確保
         var triCount = 0;
