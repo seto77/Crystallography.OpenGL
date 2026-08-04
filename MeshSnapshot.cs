@@ -60,7 +60,8 @@ public sealed class MeshSnapshot
     /// <summary>Kind が Cylinder/Cone/Pipe の場合の始点側・終点側の半径</summary>
     public double PipeRadius1, PipeRadius2;
 
-    /// <summary>Kind が Lines の場合の線分列 (ワールド座標)。円柱化エクスポートなどに使う (260803Cl 追加)</summary>
+    /// <summary>Kind が Lines の場合の線分列、または Kind が Polyhedron の場合の稜線列 (ワールド座標)。
+    /// 円柱化エクスポートなどに使う (260803Cl 追加, 260804Cl 変更: Polyhedron の稜線も対象に)</summary>
     public (V3d Start, V3d End)[] Segments = [];
 
     /// <summary>
@@ -202,6 +203,39 @@ public sealed class MeshSnapshot
             offset += count;
         }
         snap.Triangles = tri;
+
+        //260804Cl 追加: Polyhedron は面境界 (LineLoop) から稜線も抽出しておく (稜線枠エクスポート用)。
+        //隣接面で共有される稜は 2 回現れるので、量子化した無順序キーで重複除去する
+        if (snap.Kind == SnapshotKind.Polyhedron)
+        {
+            var segs = new System.Collections.Generic.List<(V3d Start, V3d End)>();
+            var seen = new System.Collections.Generic.HashSet<((long, long, long) A, (long, long, long) B)>();
+            void addSeg(int i, int j)
+            {
+                var p = o.Vertices[o.Indices[i]].Position;
+                var q = o.Vertices[o.Indices[j]].Position;
+                V3d a = p.X * r0 + p.Y * r1 + p.Z * r2 + r3, b = q.X * r0 + q.Y * r1 + q.Z * r2 + r3;
+                if ((b - a).LengthSquared < 1E-20)
+                    return;
+                (long, long, long) ka = ((long)Math.Round(a.X * 1E4), (long)Math.Round(a.Y * 1E4), (long)Math.Round(a.Z * 1E4)),
+                                   kb = ((long)Math.Round(b.X * 1E4), (long)Math.Round(b.Y * 1E4), (long)Math.Round(b.Z * 1E4));
+                if (seen.Add(ka.CompareTo(kb) <= 0 ? (ka, kb) : (kb, ka)))
+                    segs.Add((a, b));
+            }
+            offset = 0;
+            foreach (var (type, count) in o.Primitives)
+            {
+                if (offset + count > o.Indices.Length)
+                    break;
+                if (type == PT.LineLoop)
+                {
+                    for (int i = 1; i < count; i++) addSeg(offset + i - 1, offset + i);
+                    if (count > 2) addSeg(offset + count - 1, offset);
+                }
+                offset += count;
+            }
+            snap.Segments = [.. segs];
+        }
         return snap;
     }
 }
