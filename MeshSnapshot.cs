@@ -64,6 +64,10 @@ public sealed class MeshSnapshot
     /// 円柱化エクスポートなどに使う (260803Cl 追加, 260804Cl 変更: Polyhedron の稜線も対象に)</summary>
     public (V3d Start, V3d End)[] Segments = [];
 
+    /// <summary>Kind が Polyhedron の場合の面ごとの頂点ループ (ワールド座標, 凸多角形)。
+    /// 面内メッシュ (透かし格子) エクスポート用 (260805Cl 追加)</summary>
+    public V3d[][] FaceLoops = [];
+
     /// <summary>
     /// GLObject から表示メッシュのスナップショットを生成する。
     /// 三角形系プリミティブ (Triangles/TriangleStrip/TriangleFan) のみを展開し、線・点は含めない。
@@ -222,6 +226,8 @@ public sealed class MeshSnapshot
                 if (seen.Add(ka.CompareTo(kb) <= 0 ? (ka, kb) : (kb, ka)))
                     segs.Add((a, b));
             }
+            //260805Cl 追加: 面ごとの頂点ループも保持する (面内メッシュ格子のエクスポート用)
+            var loops = new System.Collections.Generic.List<V3d[]>();
             offset = 0;
             foreach (var (type, count) in o.Primitives)
             {
@@ -231,10 +237,21 @@ public sealed class MeshSnapshot
                 {
                     for (int i = 1; i < count; i++) addSeg(offset + i - 1, offset + i);
                     if (count > 2) addSeg(offset + count - 1, offset);
+                    if (count >= 3)//260805Cl 追加
+                    {
+                        var loop = new V3d[count];
+                        for (int i = 0; i < count; i++)
+                        {
+                            var p = o.Vertices[o.Indices[offset + i]].Position;
+                            loop[i] = p.X * r0 + p.Y * r1 + p.Z * r2 + r3;
+                        }
+                        loops.Add(loop);
+                    }
                 }
                 offset += count;
             }
             snap.Segments = [.. segs];
+            snap.FaceLoops = [.. loops];
         }
         return snap;
     }
