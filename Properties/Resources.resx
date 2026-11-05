@@ -130,8 +130,9 @@
   <data name="fragPPLLText" type="System.Resources.ResXFileRef, System.Windows.Forms">
     <value>..\Shaders\fragPPLL_text.c;System.String, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089;shift_jis</value>
   </data>
+  <!-- 261105Cl 参照パスの大文字小文字を実ファイル名 (fragZSORT.c) に合わせた。旧: ..\Shaders\fragZsort.c。Windows では同一ファイルだが、大文字小文字を区別するファイルシステム (Linux 等) では MSB3103 でビルドが失敗していた -->
   <data name="fragZSORT" type="System.Resources.ResXFileRef, System.Windows.Forms">
-    <value>..\Shaders\fragZsort.c;System.String, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089;shift_jis</value>
+    <value>..\Shaders\fragZSORT.c;System.String, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089;shift_jis</value>
   </data>
   <data name="fragZSORTText" type="System.Resources.ResXFileRef, System.Windows.Forms">
     <value>..\Shaders\fragZSORT_text.c;System.String, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089;shift_jis</value>
