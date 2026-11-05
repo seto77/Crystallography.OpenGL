@@ -120,10 +120,15 @@ namespace Crystallography.OpenGL
             // toolStripComboBoxRotationMode
             // 
             this.toolStripComboBoxRotationMode.DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList;
+            // 261105Cl 変更前 (4 行):
+            //this.toolStripComboBoxRotationMode.Items.AddRange(new object[] {
+            //"Objects",
+            //"View (Camera)",
+            //"Light"});
             this.toolStripComboBoxRotationMode.Items.AddRange(new object[] {
             "Objects",
-            "View (Camera)",
-            "Light"});
+            "View (camera)",
+            "Light"}); // 261105Cl 変更 (作者決定 K5: 英語の表示を sentence case に)
             this.toolStripComboBoxRotationMode.Name = "toolStripComboBoxRotationMode";
             this.toolStripComboBoxRotationMode.Size = new System.Drawing.Size(121, 23);
             // 
@@ -139,9 +144,13 @@ namespace Crystallography.OpenGL
             // toolStripComboBoxTranslatingMode
             // 
             this.toolStripComboBoxTranslatingMode.DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList;
+            // 261105Cl 変更前 (3 行):
+            //this.toolStripComboBoxTranslatingMode.Items.AddRange(new object[] {
+            //"View (Camera)",
+            //"Objects"});
             this.toolStripComboBoxTranslatingMode.Items.AddRange(new object[] {
-            "View (Camera)",
-            "Objects"});
+            "View (camera)",
+            "Objects"}); // 261105Cl 変更 (作者決定 K5: 英語の表示を sentence case に)
             this.toolStripComboBoxTranslatingMode.Name = "toolStripComboBoxTranslatingMode";
             this.toolStripComboBoxTranslatingMode.Size = new System.Drawing.Size(121, 23);
             // 
