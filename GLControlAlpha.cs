@@ -154,6 +154,11 @@ public unsafe partial class GLControlAlpha : UserControl
     [Description("ProjWidthが変化したときに発生するイベント. マウス操作(右ドラッグ/ホイール)でズームした場合や、ProjWidthに直接 set したときに発生。")]
     public event EventHandler ProjWidthChanged; // 260703Cl 追加: WorldMatrixChanged と同型
 
+    /// <summary>ProjectionModeが変化したときに発生するイベント. 261105Cl 追加</summary>
+    [Browsable(true)]
+    [Description("ProjectionModeが変化したときに発生するイベント. CTRL+右ダブルクリックで切り替えた場合や、ProjectionModeに別の値を set したときに発生。")]
+    public event EventHandler ProjectionModeChanged; // 261105Cl 追加: 呼び出し側の投影モードの表示 (コンボなど) を CTRL+右ダブルクリックの切替に合わせるため
+
     #endregion イベント
 
     #region プロパティ
@@ -298,7 +303,18 @@ public unsafe partial class GLControlAlpha : UserControl
     /// <summary>投影モード</summary>
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)] //260405Cl 追加
     [Category("Rendering properties")]
-    public ProjectionModes ProjectionMode { get => projectionMode; set { projectionMode = value; setProjMatrix(); } }
+    //public ProjectionModes ProjectionMode { get => projectionMode; set { projectionMode = value; setProjMatrix(); } } // 261105Cl 変更前
+    public ProjectionModes ProjectionMode
+    {
+        get => projectionMode;
+        set
+        {
+            var changed = projectionMode != value; // 261105Cl 追加
+            projectionMode = value;
+            setProjMatrix();
+            if (changed) ProjectionModeChanged?.Invoke(this, EventArgs.Empty); // 261105Cl 追加: 値が変わったときだけ (同じ値の set では出さない)
+        }
+    }
     private ProjectionModes projectionMode = ProjectionModes.Orhographic;
 
     /// <summary>バックグラウンドカラー</summary>
