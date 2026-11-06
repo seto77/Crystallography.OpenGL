@@ -412,9 +412,13 @@ public unsafe partial class GLControlAlpha : UserControl
     /// <summary>投影面の横の長さ(GL空間での単位)</summary>
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)] //260405Cl 追加
     [Category("Geometry")]
+    // (261106Ch) 変更前: 投影行列の更新後にイベントを発生させる順序は維持。
+    /*
     public double ProjWidth { get => projWidth; set { projWidth = value; setProjMatrix(); ProjWidthChanged?.Invoke(this, EventArgs.Empty); } } // 260703Cl ズーム操作(右ドラッグ/ホイール)・直接set のどちらでもイベント発生
 
     private double projWidth = 4f;
+    */
+    public double ProjWidth { get; set { field = value; setProjMatrix(); ProjWidthChanged?.Invoke(this, EventArgs.Empty); } } = 4f; // (261106Ch)
 
     // 260529Cl 追加: GL 描画対象(実 back buffer)のピクセルサイズを取得する。
     // Windows on ARM (x64 エミュレーション) 環境では WinForms の ClientSize と
@@ -588,7 +592,8 @@ public unsafe partial class GLControlAlpha : UserControl
         };
     }
 
-    private static int checkSupportedVersion(params FragShaders[] shaderModes)
+    // private static int checkSupportedVersion(params FragShaders[] shaderModes) // (261106Ch) 旧シグネチャ
+    private static int checkSupportedVersion(params ReadOnlySpan<FragShaders> shaderModes) // (261106Ch) 候補は同期的に列挙するだけ。
     {
         foreach (var shaderMode in shaderModes)
         {
