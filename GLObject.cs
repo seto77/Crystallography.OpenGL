@@ -9,7 +9,7 @@ using System.Drawing;
 using System.Diagnostics; // 260420Cl 追加 静的コンストラクタでの例外ログ出力用
 using System.Management;
 using System.Threading;
-using ZLinq;
+// using ZLinq; // 261111Cl 削除: ZLinq を外したため
 #endregion
 
 #region 定義
@@ -989,7 +989,8 @@ public class HoledDisk : GLObject
         CircumscribedSphereCenter = new V4d(origin, 1);
         CircumscribedSphereRadius = RadiusOuter;
 
-        var t = ValueEnumerable.Range(0, slices).Select(i => Math.SinCos((double)i / slices * 2 * Math.PI)).ToArray();
+        // var t = ValueEnumerable.Range(0, slices).Select(i => Math.SinCos((double)i / slices * 2 * Math.PI)).ToArray(); // 261111Cl 変更前
+        var t = Enumerable.Range(0, slices).Select(i => Math.SinCos((double)i / slices * 2 * Math.PI)).ToArray(); // 261111Cl 変更: ZLinq を外したので標準 LINQ
 
         IgnoreNormalSides = true;
 
