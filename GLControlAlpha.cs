@@ -22,7 +22,8 @@ using static Crystallography.Localization; // 260621Cl 追加: コード側多�
 
 namespace Crystallography.OpenGL;
 
-public unsafe partial class GLControlAlpha : UserControl
+//public unsafe partial class GLControlAlpha : UserControl // 261111Cl 変更前: 下の BufferSubData の (IntPtr)(&zero) 1 か所のためだけに unsafe だった
+public partial class GLControlAlpha : UserControl // 261111Cl 変更: OpenTK の ref 版 BufferSubData に替えて unsafe を外した
 {
     private sealed class ProgramLocations
     {
@@ -1482,7 +1483,8 @@ public unsafe partial class GLControlAlpha : UserControl
             //clearBuffers();
             uint zero = 0;
             GL.BindBufferBase(BufferRangeTarget.AtomicCounterBuffer, 0, buffers[CounterBuffer]);
-            GL.BufferSubData(BufferTarget.AtomicCounterBuffer, (IntPtr)0, sizeof(uint), (IntPtr)(&zero));
+            //GL.BufferSubData(BufferTarget.AtomicCounterBuffer, (IntPtr)0, sizeof(uint), (IntPtr)(&zero)); // 261111Cl 変更前
+            GL.BufferSubData(BufferTarget.AtomicCounterBuffer, (IntPtr)0, sizeof(uint), ref zero); // 261111Cl 変更: ref 版 (OpenTK が固定してポインタを渡す。送る 4 バイトは同じ)
             GL.BindBuffer(BufferTarget.PixelUnpackBuffer, clearBuf);
             GL.BindTexture(TextureTarget.Texture2D, headPtrTex);
             // 260529Cl 変更: ClientSize → 実 back buffer 基準 (head pointer の clear 範囲は back buffer ピクセル単位)
@@ -1906,7 +1908,8 @@ public unsafe partial class GLControlAlpha : UserControl
     {
         if (Program < 1 || glControl == null) return null; // 260420Cl 追加 DisablingOpenGL 時は null を返す (呼び出し側は null チェックするか操作失敗として扱う)
         if (InvokeRequired)
-            return (Bitmap)Invoke(new Func<Bitmap>(() => GenerateBitmap(renderBeforeRead))); // (260523Ch) GL context 操作を UI thread に寄せる
+            //return (Bitmap)Invoke(new Func<Bitmap>(() => GenerateBitmap(renderBeforeRead))); // (260523Ch) GL context 操作を UI thread に寄せる // 261111Cl 変更前
+            return Invoke(() => GenerateBitmap(renderBeforeRead)); // (260523Ch) GL context 操作を UI thread に寄せる // 261111Cl 変更: 型付きの Invoke<T> (意味は同じ)
         glControl.MakeCurrent();
 
         if (renderBeforeRead)

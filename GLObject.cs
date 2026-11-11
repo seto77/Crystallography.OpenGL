@@ -327,11 +327,13 @@ public abstract class GLObject
             // VBO作成
             GL.GenBuffers(1, out o.Obj.VBO);
             GL.BindBuffer(BufferTarget.ArrayBuffer, o.Obj.VBO);
-            GL.BufferData(BufferTarget.ArrayBuffer, new IntPtr(o.Vertices.Length * Vertex.Stride), o.Vertices, BufferUsageHint.DynamicDraw);
+            //GL.BufferData(BufferTarget.ArrayBuffer, new IntPtr(o.Vertices.Length * Vertex.Stride), o.Vertices, BufferUsageHint.DynamicDraw); // 261111Cl 変更前
+            GL.BufferData(BufferTarget.ArrayBuffer, new IntPtr(o.Vertices.Length * Vertex.Stride), o.Vertices, BufferUsageHint.StaticDraw); // 261111Cl 変更: 生成後に書き換えない (BufferSubData/MapBuffer は 4 アプリに無い) ので StaticDraw
             // EBO作成 (VAO bind 中なので VAO に記録される)
             GL.GenBuffers(1, out o.Obj.EBO);
             GL.BindBuffer(BufferTarget.ElementArrayBuffer, o.Obj.EBO);
-            GL.BufferData(BufferTarget.ElementArrayBuffer, new IntPtr(sizeOfUInt * o.Indices.Length), o.Indices, BufferUsageHint.DynamicDraw);
+            //GL.BufferData(BufferTarget.ElementArrayBuffer, new IntPtr(sizeOfUInt * o.Indices.Length), o.Indices, BufferUsageHint.DynamicDraw); // 261111Cl 変更前
+            GL.BufferData(BufferTarget.ElementArrayBuffer, new IntPtr(sizeOfUInt * o.Indices.Length), o.Indices, BufferUsageHint.StaticDraw); // 261111Cl 変更: 同上
             //VertexAttribPointerをセット
             // 260718Cl 変更: 5 属性それぞれの「location==-1 なら skip / Enable / *Pointer」定型を 2 つのローカル関数へ集約 (タプル配列は使わずゼロ確保のまま重複を除去)
             EnableIntAttrib(location.ObjType, 0);
@@ -532,7 +534,10 @@ public abstract class GLObject
         // 260717Cl 変更: All / Any / Select+Where の3回列挙を一回のループへ統合 (判定式は従来と同一)
         var allInside = true;   //全てのクリップ面の内側か
         var anyOutside = false; //いずれかのクリップ面の完全外側か
-        List<int> crossingList = null; //外接球と交差するクリップ面の index
+        //List<int> crossingList = null; //外接球と交差するクリップ面の index // 261111Cl 変更前: 毎フレーム List<int> と int[] を確保していた
+        // 261111Cl 変更: 外接球と交差するクリップ面の index は span に書く (下の分岐で使うのはクリップ面が 200 枚未満のときだけなので、その範囲はスタック、超えたら配列)
+        Span<int> crossing = clip == null ? default : clip.PrmsD.Count < 200 ? stackalloc int[clip.PrmsD.Count] : new int[clip.PrmsD.Count];
+        int crossingCount = 0; // 261111Cl 追加
         if (clip != null)
         {
             var prmsD = CollectionsMarshal.AsSpan(clip.PrmsD);
@@ -547,7 +552,8 @@ public abstract class GLObject
                     break; //完全外側なら描画しないため、以降の判定は不要
                 }
                 if (Math.Abs(dot) < CircumscribedSphereRadius)
-                    (crossingList ??= []).Add(i);
+                    //(crossingList ??= []).Add(i); // 261111Cl 変更前
+                    crossing[crossingCount++] = i; // 261111Cl 変更
             }
         }
 
@@ -561,7 +567,8 @@ public abstract class GLObject
             if (clip.PrmsD.Count < 200)//クリップ面が多すぎる場合は計算しない
             {
                 //クリップ対象となるクリップ平面
-                int[] indices = crossingList != null ? [.. crossingList] : [];
+                //int[] indices = crossingList != null ? [.. crossingList] : []; // 261111Cl 変更前
+                ReadOnlySpan<int> indices = crossing[..crossingCount]; // 261111Cl 変更: 以下の EnableClips は span 版 (中身・順序は同じ)
                 if (!ShowClippedSection)//クリップセクションを表示しない場合
                 {
                     clip.EnableClips(Program, indices);//全クリップ有効化 // (260319Ch) mesh/text の各 program に対して clip uniform を設定する
@@ -571,6 +578,8 @@ public abstract class GLObject
                 else///クリップセクションを表示する場合
                 {
                     var location = Location[(ContextKey, Program)]; // 260717Cl 追加: ループ内の辞書引きを1回に
+                    Span<int> others = stackalloc int[indices.Length]; // 261111Cl 追加: 「i 番目以外」の index の置き場 (ループの外で 1 回だけ確保。indices は 200 未満)
+                    Span<int> single = stackalloc int[1]; // 261111Cl 追加: 「i 番目だけ」の置き場
                     GL.Enable(EnableCap.StencilTest);//Stencilテスト有効
                     foreach (var i in indices)
                     {
@@ -584,7 +593,9 @@ public abstract class GLObject
                         GL.Enable(EnableCap.CullFace);//CullFace有効
                         GL.StencilFunc(StencilFunction.Always, 0, 0);//Stencil Funcを設定 (Always)
                         GL.UseProgram(Program); // (260319Ch) clip.Render() が別 program を使った後でも元へ戻す
-                        clip.EnableClips(Program, [i]);//i番目のクリップのみ有効化
+                        //clip.EnableClips(Program, [i]);//i番目のクリップのみ有効化 // 261111Cl 変更前
+                        single[0] = i; // 261111Cl 変更
+                        clip.EnableClips(Program, single);//i番目のクリップのみ有効化 // 261111Cl 変更
                                                       //裏面のみ描画(ステンシル値だけ書き込む)
                         GL.StencilOp(StencilOp.Keep, StencilOp.Keep, StencilOp.IncrWrap);//ステンシル値「+1」
                         GL.CullFace(TriangleFace.Front); //260317Cl CullFaceMode→TriangleFace 表面をカリング
@@ -605,7 +616,11 @@ public abstract class GLObject
                         GL.StencilFunc(StencilFunction.Notequal, 0, ~0); //ステンシル値が0でない部分が描画(切断面の描画). ~0 は補数(11111111)
                         GL.Disable(EnableCap.CullFace);//CullFace無効化
                         GL.UseProgram(Program); // (260319Ch) clip plane 描画後に対象 object の program へ戻す
-                        clip.EnableClips(Program, indices.Where(j => j != i));//i番目のクリップ以外を有効化
+                        //clip.EnableClips(Program, indices.Where(j => j != i));//i番目のクリップ以外を有効化 // 261111Cl 変更前: 毎回 Where と ToArray で配列を作っていた
+                        int othersCount = 0; // 261111Cl 変更: 順序はそのまま i 以外を詰める
+                        foreach (var j in indices)
+                            if (j != i) others[othersCount++] = j;
+                        clip.EnableClips(Program, others[..othersCount]);//i番目のクリップ以外を有効化 // 261111Cl 変更
                         DepthTest(CurrentDepthTestEnabled); // (260319Ch) ZSORT / PPLL / DDP すべてで現在の phase の depth state をそのまま復元する
                         clip.Render(i, Material);//i番目のクリップ面を描画
                     }
@@ -691,10 +706,19 @@ public class Clip
 
     public void EnableClips(int program, IEnumerable<int> indices)
     {
+        if (!ProgramLocations.ContainsKey(program)) // 261111Cl 変更: 従来どおり、program が未登録なら indices を読まずに戻る
+            return;
+        EnableClips(program, (ReadOnlySpan<int>)(indices as int[] ?? indices.ToArray())); // 261111Cl 変更: 本体は span 版 (下) へ。処理は従来と同じ
+    }
+
+    /// <summary>261111Cl 追加: <see cref="EnableClips(int, IEnumerable{int})"/> の span 版。描画のたびに配列を作らずに済む。処理は従来の IEnumerable 版と同じ。</summary>
+    public void EnableClips(int program, ReadOnlySpan<int> indices)
+    {
         if (!ProgramLocations.TryGetValue(program, out var locations))
             return;
 
-        var enabledIndices = indices as int[] ?? indices.ToArray(); // (260319Ch) Count/Contains の多重列挙を避ける
+        //var enabledIndices = indices as int[] ?? indices.ToArray(); // (260319Ch) Count/Contains の多重列挙を避ける // 261111Cl 変更前 (旧 IEnumerable 版の本体)
+        var enabledIndices = indices; // 261111Cl
         // 260717Cl 変更: シェーダ側 ClipPlanes[MaxClipPlanes] を超える面数は GLSL 配列外読みや ClipDistance の不正 enum になるため上限で打ち切る
         // (従来は 9 面以上同時交差で未定義動作だった。打ち切り時は先頭 MaxClipPlanes 面のみ適用となり正確な描画は保証されない)
         Debug.Assert(enabledIndices.Length <= MaxClipPlanes, $"同時に有効化できるクリップ面は {MaxClipPlanes} 枚まで (要求: {enabledIndices.Length})");
@@ -1366,21 +1390,23 @@ public class Pipe : GLObject
                 slices = Cylinder.Default.Slices;
                 stacks = Cylinder.Default.Stacks;
             }
-            else if (r2 == 0)//Coneの場合
-            {
-                if (Cone.DefaultIndices != null && UseFixedArgb)
-                {
-                    var transMat = new M4d(rotMat) * new M4d(r2, 0, 0, 0, 0, r2, 0, 0, 0, 0, vec.Length, 0, 0, 0, 0, 1);
-                    transMat.Column3 = new V4d(o, 1);
-
-                    Vertices = Cone.DefaultVertices.Select(vrs => new Vertex(transMat.ToM4f() * new V4f(vrs.Position), rotMat.ToM3f() * vrs.Normal, mat1.Argb)).ToArray();
-                    Indices = Cone.DefaultIndices;
-                    Primitives = Cone.DefaultPrimitives;
-                    return;
-                }
-                slices = Cone.Default.Slices;
-                stacks = Cone.Default.Stacks;
-            }
+            // 261111Cl 変更前 (無効化): Cone は (r1 = 0, r2 = r) で Pipe を呼ぶので、この r2 == 0 の分岐には入らない (呼び出し元は Cone と Cylinder だけ)。
+            //  仮に (r1 > 0, r2 = 0) で入ると、既定の円錐 (頂点が原点) を半径 r2 = 0 で拡大するため形が線に潰れていた。
+            //else if (r2 == 0)//Coneの場合
+            //{
+            //    if (Cone.DefaultIndices != null && UseFixedArgb)
+            //    {
+            //        var transMat = new M4d(rotMat) * new M4d(r2, 0, 0, 0, 0, r2, 0, 0, 0, 0, vec.Length, 0, 0, 0, 0, 1);
+            //        transMat.Column3 = new V4d(o, 1);
+            //
+            //        Vertices = Cone.DefaultVertices.Select(vrs => new Vertex(transMat.ToM4f() * new V4f(vrs.Position), rotMat.ToM3f() * vrs.Normal, mat1.Argb)).ToArray();
+            //        Indices = Cone.DefaultIndices;
+            //        Primitives = Cone.DefaultPrimitives;
+            //        return;
+            //    }
+            //    slices = Cone.Default.Slices;
+            //    stacks = Cone.Default.Stacks;
+            //}
             else
             {
                 slices = Default.Slices;
