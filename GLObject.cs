@@ -1392,6 +1392,7 @@ public class Pipe : GLObject
             }
             // 261111Cl 変更前 (無効化): Cone は (r1 = 0, r2 = r) で Pipe を呼ぶので、この r2 == 0 の分岐には入らない (呼び出し元は Cone と Cylinder だけ)。
             //  仮に (r1 > 0, r2 = 0) で入ると、既定の円錐 (頂点が原点) を半径 r2 = 0 で拡大するため形が線に潰れていた。
+            //  261111Cl 追記: Cone.Default (描画品質の設定) は、Cone のコンストラクタが分割数 (0, 0) を置き換えて渡すことで効かせる。
             //else if (r2 == 0)//Coneの場合
             //{
             //    if (Cone.DefaultIndices != null && UseFixedArgb)
@@ -1542,7 +1543,10 @@ public class Cone : Pipe
     /// <param name="slices">高さの分割数</param>
     /// <param name="stacks">経線の分割数</param>
     public Cone(in V3d o, in V3d vec, double r, Material mat, DrawingMode mode, bool sole = true, int slices = 0, int stacks = 0)
-       : base(in o, in vec, 0, r, mat, mode, sole, slices, stacks)
+       //: base(in o, in vec, 0, r, mat, mode, sole, slices, stacks) // 261111Cl 変更前: (0, 0) のまま渡すと Pipe の else 分岐で Pipe.Default が使われ、Cone.Default (描画品質の設定) が効かなかった
+       : base(in o, in vec, 0, r, mat, mode, sole,
+             slices == 0 && stacks == 0 ? Cone.Default.Slices : slices,
+             slices == 0 && stacks == 0 ? Cone.Default.Stacks : stacks) // 261111Cl 変更: 分割数が未指定 (0, 0) なら Cone.Default を使う
     { }
 
     static Cone()
